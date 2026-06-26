@@ -40,6 +40,8 @@ docker compose up --build -d
 
 При первом запуске на пустом volume дамп [`database.sql`](database.sql) восстанавливается автоматически. При повторном запуске с существующими данными restore пропускается.
 
+> **Клонирование репозитория:** `database.sql` хранится в Git LFS (~1.3 GB). После `git clone` выполните `git lfs pull`.
+
 Данные сохраняются в Docker volumes (`pgdata`, `filestorage`) и каталогах `exports/`, `logs/` на хосте.
 
 Остановка: `docker compose down` (данные в volumes сохраняются). Полный сброс: `docker compose down -v`.
