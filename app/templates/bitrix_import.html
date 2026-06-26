@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}CRM Импорт — Bitrix24{% endblock %}
+{% block content %}
+<h1 class="mb-4">Импорт Bitrix24 CRM</h1>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Подключение</div>
+                <div class="fw-semibold">{{ "OK" if dashboard.bitrix_connected else "Нет" }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Лиды</div>
+                <div class="fw-semibold">{{ dashboard.leads_count }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Сделки</div>
+                <div class="fw-semibold">{{ dashboard.deals_count }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="text-muted small">Поля / UF</div>
+                <div class="fw-semibold">{{ dashboard.fields_count }} / {{ dashboard.custom_fields_count }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Действия</div>
+    <div class="card-body d-flex flex-wrap gap-2">
+        <button class="btn btn-primary" id="btn-incremental">Запустить инкрементальный импорт</button>
+        <button class="btn btn-outline-secondary" id="btn-full">Полный импорт</button>
+        <button class="btn btn-outline-secondary" id="btn-schema">Обновить структуру</button>
+        <button class="btn btn-outline-secondary" id="btn-ai">Повторить AI-анализ</button>
+        <button class="btn btn-outline-warning" id="btn-reconcile">Сверка удалений</button>
+        <button class="btn btn-success" id="btn-contacts">Добавить контакты к существующим</button>
+    </div>
+</div>
+
+<div class="card mb-4" id="progress-card" style="display:none;">
+    <div class="card-header">Прогресс импорта</div>
+    <div class="card-body">
+        <div id="progress-phase" class="mb-2"></div>
+        <div class="progress mb-2">
+            <div class="progress-bar" id="progress-bar" style="width:0%"></div>
+        </div>
+        <div id="progress-stats" class="small text-muted"></div>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between">
+        <span>Данные</span>
+        <div class="btn-group btn-group-sm">
+            <a href="/bitrix-import/entities/1" class="btn btn-outline-primary">Лиды</a>
+            <a href="/bitrix-import/entities/2" class="btn btn-outline-primary">Сделки</a>
+            <a href="/bitrix-import/entities/3" class="btn btn-outline-primary">Контакты</a>
+            <a href="/bitrix-import/entities/4" class="btn btn-outline-primary">Компании</a>
+            <a href="/bitrix-import/fields" class="btn btn-outline-secondary">Поля</a>
+            <a href="/bitrix-import/dictionaries" class="btn btn-outline-secondary">Справочники</a>
+            <a href="/bitrix-import/runs" class="btn btn-outline-secondary">Запуски</a>
+        </div>
+    </div>
+    <div class="card-body">
+        <dl class="row mb-0">
+            <dt class="col-sm-4">Портал</dt><dd class="col-sm-8">{{ dashboard.portal_id }}</dd>
+            <dt class="col-sm-4">Последний полный</dt><dd class="col-sm-8">{{ format_dt(dashboard.last_full_import) or "—" }}</dd>
+            <dt class="col-sm-4">Последний инкрементальный</dt><dd class="col-sm-8">{{ format_dt(dashboard.last_incremental_import) or "—" }}</dd>
+            <dt class="col-sm-4">Checkpoint</dt><dd class="col-sm-8">{{ dashboard.checkpoint.cursor_time if dashboard.checkpoint else "—" }}</dd>
+            <dt class="col-sm-4">Удалённые</dt><dd class="col-sm-8">{{ dashboard.deleted_count }}</dd>
+            <dt class="col-sm-4">Справочники</dt><dd class="col-sm-8">{{ dashboard.dictionaries_count }}</dd>
+            <dt class="col-sm-4">Поля на проверку</dt><dd class="col-sm-8">{{ dashboard.fields_needing_review }}</dd>
+        </dl>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentImportId = null;
+let pollTimer = null;
+
+async function startImport(mode, extra = {}) {
+    const body = { mode, analyze_metadata: true, ...extra };
+    const resp = await fetch('/admin/bitrix/imports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { alert(data.detail || 'Ошибка'); return; }
+    currentImportId = data.import_id;
+    document.getElementById('progress-card').style.display = 'block';
+    pollProgress();
+}
+
+function pollProgress() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(async () => {
+        if (!currentImportId) return;
+        const resp = await fetch(`/admin/bitrix/imports/${currentImportId}`);
+        const run = await resp.json();
+        document.getElementById('progress-phase').textContent = `${run.status}: ${run.current_phase}`;
+        const total = run.processed_count || 1;
+        const pct = run.status === 'completed' ? 100 : Math.min(95, (run.processed_count / Math.max(total, 1)) * 100);
+        document.getElementById('progress-bar').style.width = pct + '%';
+        document.getElementById('progress-stats').textContent =
+            `Обработано: ${run.processed_count}, создано: ${run.created_count}, обновлено: ${run.updated_count}, ` +
+            `без изменений: ${run.unchanged_count}, удалено: ${run.deleted_count}, ошибок: ${run.failed_count}, ` +
+            `API: ${run.api_requests_count}, AI: ${run.ai_requests_count}`;
+        if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+            clearInterval(pollTimer);
+            if (run.status === 'completed') setTimeout(() => location.reload(), 1500);
+        }
+    }, 2000);
+}
+
+document.getElementById('btn-incremental').addEventListener('click', () => startImport('incremental'));
+document.getElementById('btn-full').addEventListener('click', () => {
+    if (confirm('Полный импорт может занять длительное время. Продолжить?')) {
+        startImport('full', { confirm_full: true });
+    }
+});
+document.getElementById('btn-schema').addEventListener('click', () => startImport('schema_only'));
+document.getElementById('btn-ai').addEventListener('click', async () => {
+    const resp = await fetch('/admin/bitrix/metadata/analyze', { method: 'POST' });
+    const data = await resp.json();
+    if (resp.ok) { currentImportId = data.import_id; document.getElementById('progress-card').style.display = 'block'; pollProgress(); }
+    else alert(data.detail || 'Ошибка');
+});
+document.getElementById('btn-reconcile').addEventListener('click', async () => {
+    const resp = await fetch('/admin/bitrix/reconciliation', { method: 'POST' });
+    const data = await resp.json();
+    if (resp.ok) { currentImportId = data.import_id; document.getElementById('progress-card').style.display = 'block'; pollProgress(); }
+    else alert(data.detail || 'Ошибка');
+});
+document.getElementById('btn-contacts').addEventListener('click', () => {
+    if (confirm('Прогон «Добавить»: подтянуть контакты ко всем существующим сделкам и лидам. Продолжить?')) {
+        startImport('contacts_backfill');
+    }
+});
+</script>
+{% endblock %}

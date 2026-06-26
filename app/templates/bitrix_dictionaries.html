@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Справочники CRM{% endblock %}
+{% block content %}
+<h1 class="mb-3">Справочники</h1>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Код</th><th>Название</th><th>Источник</th><th>Элементов</th><th></th></tr></thead>
+    <tbody>
+    {% for d in dictionaries %}
+    <tr>
+        <td><code>{{ d.dictionary_code }}</code></td>
+        <td>{{ d.title or '—' }}</td>
+        <td>{{ d.source_type }}</td>
+        <td>{{ d.entries_count }}</td>
+        <td><a href="/bitrix-import/dictionaries/{{ d.id }}">Открыть</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="text-muted">Нет справочников</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

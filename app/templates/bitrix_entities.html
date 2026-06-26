@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}{{ entity_label }} — CRM Импорт{% endblock %}
+{% block content %}
+<h1 class="mb-3">{{ entity_label }}</h1>
+<form class="row g-2 mb-3" method="get">
+    <div class="col-auto"><input name="search" class="form-control" placeholder="ID или название" value="{{ search or '' }}"></div>
+    <div class="col-auto"><button class="btn btn-primary">Поиск</button></div>
+</form>
+<table class="table table-sm table-striped">
+    <thead><tr><th>ID</th><th>Название</th><th>Стадия</th><th>Ответственный</th><th>Изменён</th><th></th></tr></thead>
+    <tbody>
+    {% for e in entities %}
+    <tr class="{{ 'table-secondary' if e.is_deleted else '' }}">
+        <td>{{ e.entity_id }}</td>
+        <td>{{ e.title or '—' }}</td>
+        <td>{{ e.stage_id or '—' }}</td>
+        <td>{{ e.assigned_by_id or '—' }}</td>
+        <td>{{ format_dt(e.updated_time) if e.updated_time else '—' }}</td>
+        <td><a href="/bitrix-import/entities/{{ entity_type_id }}/{{ e.entity_id }}">Открыть</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="text-muted">Нет данных</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if total > page_size %}
+<nav><ul class="pagination">
+    {% for p in range(1, (total // page_size) + 2) %}
+    {% if p <= ((total // page_size) + 1) %}
+    <li class="page-item {{ 'active' if p == page else '' }}"><a class="page-link" href="?page={{ p }}&search={{ search or '' }}">{{ p }}</a></li>
+    {% endif %}
+    {% endfor %}
+</ul></nav>
+{% endif %}
+<p class="text-muted small">Всего: {{ total }}</p>
+{% endblock %}

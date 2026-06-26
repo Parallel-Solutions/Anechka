@@ -1,0 +1,1021 @@
+{
+  "$defs": {
+    "Aggregate": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "func": {
+          "enum": [
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max"
+          ],
+          "title": "Func",
+          "type": "string"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "func"
+      ],
+      "title": "Aggregate",
+      "type": "object"
+    },
+    "AggregateValue": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "aggregate",
+          "default": "aggregate",
+          "title": "Kind",
+          "type": "string"
+        },
+        "func": {
+          "enum": [
+            "count",
+            "sum",
+            "avg",
+            "min",
+            "max"
+          ],
+          "title": "Func",
+          "type": "string"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "func"
+      ],
+      "title": "AggregateValue",
+      "type": "object"
+    },
+    "CoalesceValue": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "coalesce",
+          "default": "coalesce",
+          "title": "Kind",
+          "type": "string"
+        },
+        "parts": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "constant": "#/$defs/ConstantValue",
+                "field": "#/$defs/FieldValue"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/FieldValue"
+              },
+              {
+                "$ref": "#/$defs/ConstantValue"
+              }
+            ]
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Parts",
+          "type": "array"
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "title": "CoalesceValue",
+      "type": "object"
+    },
+    "Column": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "header": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Header",
+          "type": "string"
+        },
+        "value": {
+          "discriminator": {
+            "mapping": {
+              "aggregate": "#/$defs/AggregateValue",
+              "coalesce": "#/$defs/CoalesceValue",
+              "concat": "#/$defs/ConcatValue",
+              "conditional": "#/$defs/ConditionalValue",
+              "constant": "#/$defs/ConstantValue",
+              "field": "#/$defs/FieldValue"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/FieldValue"
+            },
+            {
+              "$ref": "#/$defs/ConstantValue"
+            },
+            {
+              "$ref": "#/$defs/ConcatValue"
+            },
+            {
+              "$ref": "#/$defs/CoalesceValue"
+            },
+            {
+              "$ref": "#/$defs/ConditionalValue"
+            },
+            {
+              "$ref": "#/$defs/AggregateValue"
+            }
+          ],
+          "title": "Value"
+        },
+        "transforms": {
+          "items": {
+            "$ref": "#/$defs/TransformStep"
+          },
+          "maxItems": 10,
+          "title": "Transforms",
+          "type": "array"
+        },
+        "width": {
+          "anyOf": [
+            {
+              "maximum": 120,
+              "minimum": 3,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width"
+        },
+        "excel_format": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Excel Format"
+        }
+      },
+      "required": [
+        "id",
+        "header",
+        "value"
+      ],
+      "title": "Column",
+      "type": "object"
+    },
+    "ConcatValue": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "concat",
+          "default": "concat",
+          "title": "Kind",
+          "type": "string"
+        },
+        "parts": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "constant": "#/$defs/ConstantValue",
+                "field": "#/$defs/FieldValue"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/FieldValue"
+              },
+              {
+                "$ref": "#/$defs/ConstantValue"
+              }
+            ]
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Parts",
+          "type": "array"
+        },
+        "separator": {
+          "default": " ",
+          "maxLength": 16,
+          "title": "Separator",
+          "type": "string"
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "title": "ConcatValue",
+      "type": "object"
+    },
+    "Condition": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/FieldRef"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "in",
+            "not_in",
+            "contains",
+            "starts_with",
+            "is_null",
+            "is_not_null"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "values": {
+          "anyOf": [
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "maxItems": 200,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Values"
+        }
+      },
+      "required": [
+        "field",
+        "op"
+      ],
+      "title": "Condition",
+      "type": "object"
+    },
+    "ConditionalCase": {
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "$ref": "#/$defs/Condition"
+        },
+        "then": {
+          "discriminator": {
+            "mapping": {
+              "constant": "#/$defs/ConstantValue",
+              "field": "#/$defs/FieldValue"
+            },
+            "propertyName": "kind"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/FieldValue"
+            },
+            {
+              "$ref": "#/$defs/ConstantValue"
+            }
+          ],
+          "title": "Then"
+        }
+      },
+      "required": [
+        "when",
+        "then"
+      ],
+      "title": "ConditionalCase",
+      "type": "object"
+    },
+    "ConditionalValue": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "conditional",
+          "default": "conditional",
+          "title": "Kind",
+          "type": "string"
+        },
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/ConditionalCase"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Cases",
+          "type": "array"
+        },
+        "default": {
+          "anyOf": [
+            {
+              "discriminator": {
+                "mapping": {
+                  "constant": "#/$defs/ConstantValue",
+                  "field": "#/$defs/FieldValue"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/FieldValue"
+                },
+                {
+                  "$ref": "#/$defs/ConstantValue"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Default"
+        }
+      },
+      "required": [
+        "cases"
+      ],
+      "title": "ConditionalValue",
+      "type": "object"
+    },
+    "ConstantValue": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "constant",
+          "default": "constant",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "title": "ConstantValue",
+      "type": "object"
+    },
+    "Dataset": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "primary_entity_type_id": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "title": "Primary Entity Type Id",
+          "type": "integer"
+        },
+        "sources": {
+          "items": {
+            "$ref": "#/$defs/Source"
+          },
+          "maxItems": 6,
+          "minItems": 1,
+          "title": "Sources",
+          "type": "array"
+        },
+        "relation_refs": {
+          "items": {
+            "$ref": "#/$defs/RelationRef"
+          },
+          "maxItems": 6,
+          "title": "Relation Refs",
+          "type": "array"
+        },
+        "filters": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "maxItems": 40,
+          "title": "Filters",
+          "type": "array"
+        },
+        "sort": {
+          "items": {
+            "$ref": "#/$defs/SortKey"
+          },
+          "maxItems": 6,
+          "title": "Sort",
+          "type": "array"
+        },
+        "limit": {
+          "default": 5000,
+          "maximum": 200000,
+          "minimum": 1,
+          "title": "Limit",
+          "type": "integer"
+        },
+        "include_deleted": {
+          "default": false,
+          "title": "Include Deleted",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "primary_entity_type_id",
+        "sources"
+      ],
+      "title": "Dataset",
+      "type": "object"
+    },
+    "FieldRef": {
+      "additionalProperties": false,
+      "properties": {
+        "entity_type_id": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "title": "Entity Type Id",
+          "type": "integer"
+        },
+        "field_code": {
+          "maxLength": 255,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_]+$",
+          "title": "Field Code",
+          "type": "string"
+        },
+        "source_alias": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Alias"
+        }
+      },
+      "required": [
+        "entity_type_id",
+        "field_code"
+      ],
+      "title": "FieldRef",
+      "type": "object"
+    },
+    "FieldValue": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "field",
+          "default": "field",
+          "title": "Kind",
+          "type": "string"
+        },
+        "field": {
+          "$ref": "#/$defs/FieldRef"
+        }
+      },
+      "required": [
+        "field"
+      ],
+      "title": "FieldValue",
+      "type": "object"
+    },
+    "MemoryRef": {
+      "additionalProperties": false,
+      "properties": {
+        "memory_id": {
+          "title": "Memory Id",
+          "type": "integer"
+        },
+        "kind": {
+          "enum": [
+            "term",
+            "alias",
+            "mapping",
+            "template",
+            "rule",
+            "instruction",
+            "preference"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "hash": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hash"
+        }
+      },
+      "required": [
+        "memory_id",
+        "kind"
+      ],
+      "title": "MemoryRef",
+      "type": "object"
+    },
+    "RelationRef": {
+      "additionalProperties": false,
+      "properties": {
+        "relation_code": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Relation Code",
+          "type": "string"
+        },
+        "from_alias": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "From Alias",
+          "type": "string"
+        },
+        "to_alias": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "To Alias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "relation_code",
+        "from_alias",
+        "to_alias"
+      ],
+      "title": "RelationRef",
+      "type": "object"
+    },
+    "Sheet": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 31,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "mode": {
+          "default": "rows",
+          "enum": [
+            "rows",
+            "aggregate",
+            "errors",
+            "parameters"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "dataset_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dataset Id"
+        },
+        "row_filters": {
+          "items": {
+            "$ref": "#/$defs/Condition"
+          },
+          "maxItems": 40,
+          "title": "Row Filters",
+          "type": "array"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/Column"
+          },
+          "maxItems": 200,
+          "title": "Columns",
+          "type": "array"
+        },
+        "sort": {
+          "items": {
+            "$ref": "#/$defs/SortKey"
+          },
+          "maxItems": 6,
+          "title": "Sort",
+          "type": "array"
+        },
+        "group_by": {
+          "items": {
+            "$ref": "#/$defs/FieldRef"
+          },
+          "maxItems": 10,
+          "title": "Group By",
+          "type": "array"
+        },
+        "aggregates": {
+          "items": {
+            "$ref": "#/$defs/Aggregate"
+          },
+          "maxItems": 20,
+          "title": "Aggregates",
+          "type": "array"
+        },
+        "validation_rules": {
+          "items": {
+            "$ref": "#/$defs/ValidationRule"
+          },
+          "maxItems": 30,
+          "title": "Validation Rules",
+          "type": "array"
+        },
+        "error_policy": {
+          "default": "route_to_errors",
+          "enum": [
+            "route_to_errors",
+            "stop",
+            "valid_only",
+            "warn"
+          ],
+          "title": "Error Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "Sheet",
+      "type": "object"
+    },
+    "SortKey": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/FieldRef"
+        },
+        "direction": {
+          "default": "asc",
+          "enum": [
+            "asc",
+            "desc"
+          ],
+          "title": "Direction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field"
+      ],
+      "title": "SortKey",
+      "type": "object"
+    },
+    "Source": {
+      "additionalProperties": false,
+      "properties": {
+        "alias": {
+          "maxLength": 32,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Alias",
+          "type": "string"
+        },
+        "entity_type_id": {
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "title": "Entity Type Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "alias",
+        "entity_type_id"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "TransformStep": {
+      "additionalProperties": false,
+      "properties": {
+        "op": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Op",
+          "type": "string"
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "title": "TransformStep",
+      "type": "object"
+    },
+    "ValidationRule": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        },
+        "column_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Column Id"
+        },
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FieldRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "params": {
+          "additionalProperties": true,
+          "title": "Params",
+          "type": "object"
+        },
+        "severity": {
+          "default": "error",
+          "enum": [
+            "error",
+            "warning"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type"
+      ],
+      "title": "ValidationRule",
+      "type": "object"
+    },
+    "Workbook": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "default": "xlsx",
+          "enum": [
+            "xlsx",
+            "csv"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "filename_label": {
+          "anyOf": [
+            {
+              "maxLength": 60,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "crm_export",
+          "title": "Filename Label"
+        },
+        "include_params_sheet": {
+          "default": true,
+          "title": "Include Params Sheet",
+          "type": "boolean"
+        },
+        "include_errors_sheet": {
+          "default": true,
+          "title": "Include Errors Sheet",
+          "type": "boolean"
+        },
+        "sheets": {
+          "items": {
+            "$ref": "#/$defs/Sheet"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Sheets",
+          "type": "array"
+        }
+      },
+      "required": [
+        "sheets"
+      ],
+      "title": "Workbook",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "2.0",
+      "default": "2.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "datasets": {
+      "items": {
+        "$ref": "#/$defs/Dataset"
+      },
+      "maxItems": 10,
+      "minItems": 1,
+      "title": "Datasets",
+      "type": "array"
+    },
+    "workbook": {
+      "$ref": "#/$defs/Workbook"
+    },
+    "memory_refs": {
+      "items": {
+        "$ref": "#/$defs/MemoryRef"
+      },
+      "maxItems": 40,
+      "title": "Memory Refs",
+      "type": "array"
+    }
+  },
+  "required": [
+    "title",
+    "datasets",
+    "workbook"
+  ],
+  "title": "ExportPlan2",
+  "type": "object"
+}

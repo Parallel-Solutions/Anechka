@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Умные выгрузки{% endblock %}
+{% block body_class %}ie-fullpage{% endblock %}
+{% block navbar_class %}navbar-dark bg-primary py-1 mb-0{% endblock %}
+{% block main_class %}container-fluid px-0 pb-0 h-100{% endblock %}
+
+{% block content %}
+<div id="ie-app" class="ie-page-layout d-flex flex-row w-100 h-100 overflow-hidden" data-api="/api/intelligent-export">
+  <aside class="ie-sidebar d-flex flex-column h-100 overflow-hidden">
+    <div class="ie-sidebar-top">
+      <button id="ie-new-conv" type="button" class="btn btn-outline-secondary btn-sm w-100 ie-new-conv-btn">+ Новый диалог</button>
+    </div>
+    <div class="ie-sidebar-label">История</div>
+    <ul id="ie-conv-list" class="ie-conv-list"></ul>
+  </aside>
+
+  <div class="ie-chat-main d-flex flex-column flex-grow-1 min-vh-0 overflow-hidden">
+    <div id="ie-banner" class="ie-banner"></div>
+    <div id="ie-messages" class="ie-messages"></div>
+    <div class="ie-chat-footer">
+      <div class="ie-composer">
+        <textarea id="ie-chat-input" class="ie-composer-input" rows="1" placeholder="Опишите нужную выгрузку..."></textarea>
+        <button id="ie-chat-send" type="button" class="ie-composer-send" title="Отправить" aria-label="Отправить">↑</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Plan modal -->
+<div class="modal fade" id="ie-plan-modal" tabindex="-1" aria-labelledby="ie-plan-modal-label" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="ie-plan-modal-label">План выгрузки</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div id="ie-plan-summary" class="small mb-2 border rounded p-2 bg-light"></div>
+        <div class="d-flex justify-content-end mb-1">
+          <button id="ie-toggle-json" type="button" class="btn btn-sm btn-outline-secondary">Показать JSON</button>
+        </div>
+        <pre id="ie-plan-json" class="ie-plan-json border rounded p-2 bg-light small mb-0" style="display:none"></pre>
+        <div id="ie-validation" class="mt-2 small"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Preview modal -->
+<div class="modal fade" id="ie-preview-modal" tabindex="-1" aria-labelledby="ie-preview-modal-label" aria-hidden="true">
+  <div class="modal-dialog modal-xl modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="ie-preview-modal-label">Предпросмотр</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+      </div>
+      <div class="modal-body">
+        <div id="ie-sync" class="small mb-2"></div>
+        <div id="ie-warnings" class="small text-warning mb-2"></div>
+        <div id="ie-preview-hint" class="small text-muted mb-2"></div>
+        <ul id="ie-preview-tabs" class="nav nav-tabs" role="tablist"></ul>
+        <div id="ie-preview-body" class="mt-2 ie-preview-body"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<textarea id="ie-plan-editor" class="d-none" readonly spellcheck="false"></textarea>
+<span id="ie-run-status" class="d-none"></span>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/intelligent_export.js"></script>
+{% endblock %}

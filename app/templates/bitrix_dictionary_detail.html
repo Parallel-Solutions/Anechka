@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ dictionary.title or dictionary.dictionary_code }}{% endblock %}
+{% block content %}
+<p class="mb-3"><a href="/bitrix-import/dictionaries">← К списку</a></p>
+<h1 class="mb-3">{{ dictionary.title or dictionary.dictionary_code }}</h1>
+<dl class="row mb-4">
+    <dt class="col-sm-3">Код</dt><dd class="col-sm-9"><code>{{ dictionary.dictionary_code }}</code></dd>
+    <dt class="col-sm-3">Источник</dt><dd class="col-sm-9">{{ dictionary.source_type }}</dd>
+    <dt class="col-sm-3">Тип сущности</dt><dd class="col-sm-9">{{ dictionary.entity_type_id }}</dd>
+    <dt class="col-sm-3">Элементов</dt><dd class="col-sm-9">{{ entries_count }}</dd>
+</dl>
+<table class="table table-sm table-striped">
+    <thead><tr><th>External ID</th><th>Значение</th><th>Нормализовано</th><th>Описание</th><th>На проверку</th></tr></thead>
+    <tbody>
+    {% for e in entries %}
+    <tr>
+        <td><code>{{ e.external_id }}</code></td>
+        <td>{{ e.raw_value or '—' }}</td>
+        <td>{{ e.normalized_value or '—' }}</td>
+        <td>{{ e.description or '—' }}</td>
+        <td>{{ 'Да' if e.needs_review else 'Нет' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="text-muted">Нет активных элементов</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}AI-чат — Bitrix24 Export{% endblock %}
+
+{% block content %}
+
+<h1 class="h3 mb-4">AI-чат с Bitrix24</h1>
+
+
+
+{% if not openai_configured %}
+
+<div class="alert alert-warning">
+
+    OpenAI API ключ не настроен. Укажите его на странице <a href="/settings">Настройки</a>.
+
+</div>
+
+{% endif %}
+
+{% if not bitrix_configured %}
+
+<div class="alert alert-info">
+
+    URL вебхука Bitrix24 не настроен. Поиск по CRM будет недоступен до настройки
+
+    <a href="/settings">вебхука</a>.
+
+</div>
+
+{% endif %}
+
+
+
+<div class="row g-3 ai-page-layout">
+
+    <div class="col-lg-3">
+
+        <div class="card shadow-sm ai-prompts-card">
+
+            <div class="card-header d-flex justify-content-between align-items-center py-2">
+
+                <span class="fw-semibold">Промпты</span>
+
+                <button type="button" class="btn btn-sm btn-outline-primary" id="btn-add-prompt"
+
+                        title="Добавить промпт">
+
+                    + Добавить
+
+                </button>
+
+            </div>
+
+            <div class="card-body p-0">
+
+                <div id="prompt-list" class="list-group list-group-flush ai-prompt-list">
+
+                    <div class="list-group-item text-muted small">Загрузка…</div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+
+    <div class="col-lg-9">
+
+        <div class="card shadow-sm">
+
+            <div class="card-body d-flex flex-column ai-chat-card">
+
+                <div id="chat-messages" class="flex-grow-1 overflow-auto mb-3 border rounded p-3 bg-light ai-chat-messages">
+
+                    <div class="text-muted small">Выберите промпт слева или опишите задачу своими словами. Например: «Покажи 20 сделок из воронки 15 на стадии NEW».</div>
+
+                </div>
+
+                <div id="chat-table-area" class="mb-3 d-none">
+
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+
+                        <h2 class="h6 mb-0">Результат выборки</h2>
+
+                        <div class="d-flex gap-2">
+                            <a id="btn-download-excel" class="btn btn-sm btn-outline-success d-none" href="#" download>Скачать Excel</a>
+                            <a id="btn-download-json" class="btn btn-sm btn-outline-secondary d-none" href="#" download>Скачать JSON</a>
+                        </div>
+
+                    </div>
+
+                    <div class="table-responsive">
+
+                        <table id="chat-table" class="table table-sm table-striped table-bordered mb-0">
+
+                            <thead></thead>
+
+                            <tbody></tbody>
+
+                        </table>
+
+                    </div>
+
+                </div>
+
+                <form id="chat-form" class="mt-auto">
+
+                    <div class="input-group">
+
+                        <textarea id="chat-input" class="form-control" rows="2"
+
+                                  placeholder="Введите запрос..." {% if not openai_configured %}disabled{% endif %}></textarea>
+
+                        <button type="submit" class="btn btn-primary" id="btn-send-chat" {% if not openai_configured %}disabled{% endif %}>
+
+                            Отправить
+
+                        </button>
+
+                    </div>
+
+                    <div id="chat-status" class="form-text mt-1"></div>
+
+                </form>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+
+
+<div class="modal fade" id="prompt-modal" tabindex="-1" aria-labelledby="prompt-modal-label" aria-hidden="true">
+
+    <div class="modal-dialog">
+
+        <div class="modal-content">
+
+            <form id="prompt-form">
+
+                <div class="modal-header">
+
+                    <h5 class="modal-title" id="prompt-modal-label">Добавить промпт</h5>
+
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+
+                </div>
+
+                <div class="modal-body">
+
+                    <input type="hidden" id="prompt-edit-id" value="">
+
+                    <div class="mb-3">
+
+                        <label for="prompt-title" class="form-label">Название</label>
+
+                        <input type="text" class="form-control" id="prompt-title" maxlength="120" required>
+
+                    </div>
+
+                    <div class="mb-0">
+
+                        <label for="prompt-text" class="form-label">Текст запроса</label>
+
+                        <textarea class="form-control" id="prompt-text" rows="4" maxlength="4000" required></textarea>
+
+                    </div>
+
+                    <div id="prompt-form-error" class="text-danger small mt-2 d-none"></div>
+
+                </div>
+
+                <div class="modal-footer">
+
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+
+                    <button type="submit" class="btn btn-primary" id="prompt-form-submit">Сохранить</button>
+
+                </div>
+
+            </form>
+
+        </div>
+
+    </div>
+
+</div>
+
+{% endblock %}
+

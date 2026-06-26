@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.git/
+.gitignore
+.env.example
+data/*.db
+exports/
+logs/
+*.log
+database.sql
+.DS_Store
+Thumbs.db
+README.md
+API.md

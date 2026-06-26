@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Выгрузка сделок — Bitrix24 Export{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
+    <div>
+        <h1 class="h3 mb-1">Выгрузка сделок Bitrix24</h1>
+        <p class="text-muted mb-0">Экспорт телефонов контактов по региону или стадии</p>
+    </div>
+    <div>
+        {% if bitrix_connected %}
+        <span class="badge bg-success">Bitrix24: подключено</span>
+        {% else %}
+        <span class="badge bg-danger">Bitrix24: нет подключения</span>
+        {% endif %}
+        {% if webhook_masked %}
+        <small class="text-muted d-block mt-1">{{ webhook_masked }}</small>
+        {% endif %}
+    </div>
+</div>
+
+<ul class="nav nav-tabs mb-4" id="exportTabs" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="region-tab" data-bs-toggle="tab" data-bs-target="#region-pane" type="button">Выгрузка по региону</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="stage-tab" data-bs-toggle="tab" data-bs-target="#stage-pane" type="button">Выгрузка по стадии</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="category-full-tab" data-bs-toggle="tab" data-bs-target="#category-full-pane" type="button">Полная выгрузка по воронке</button>
+    </li>
+</ul>
+
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="region-pane">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <form id="region-form">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Название региона</label>
+                            <input type="text" class="form-control" name="region_name" id="region_name" required>
+                        </div>
+                        <div class="col-md-6 d-flex align-items-end">
+                            <button type="button" class="btn btn-outline-primary" id="btn-search-region">Найти регион</button>
+                        </div>
+                        <div class="col-12" id="region-search-result"></div>
+                        <input type="hidden" name="region_id" id="region_id">
+                        <div class="col-md-4">
+                            <label class="form-label">ID категории сделок</label>
+                            <input type="number" class="form-control" name="category_id" value="15">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">ID инфоблока регионов</label>
+                            <input type="number" class="form-control" name="iblock_id" id="iblock_id" value="49">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Код поля региона</label>
+                            <input type="text" class="form-control" name="region_field" value="UF_CRM_5ECE25C5D78E0">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Макс. количество сделок</label>
+                            <input type="number" class="form-control" name="limit" value="500" min="1" max="{{ max_export_size }}">
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary" id="btn-region-export">Запустить выгрузку</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="stage-pane">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <form id="stage-form">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Воронка / категория</label>
+                            <select class="form-select" name="category_id" id="stage_category_id" required></select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Стадия</label>
+                            <select class="form-select" name="stage_id" id="stage_id" required disabled></select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Макс. количество сделок</label>
+                            <input type="number" class="form-control" name="limit" value="50" min="1" max="{{ max_export_size }}">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Формат Excel</label>
+                            <select class="form-select" name="excel_format">
+                                <option value="normalized" selected>Нормализованный</option>
+                                <option value="wide">Широкий</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Исключённые сотрудники</label>
+                            <select class="form-select" name="excluded_user_ids" id="excluded_users" multiple size="6"></select>
+                            <div class="form-text">Удерживайте Ctrl для выбора нескольких сотрудников</div>
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="include_company_phones" id="s_company_phones" checked>
+                                <label class="form-check-label" for="s_company_phones">Добавлять телефоны компании</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="include_company_contacts" id="s_company_contacts" checked>
+                                <label class="form-check-label" for="s_company_contacts">Добавлять контакты компании</label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="all_contact_phones" id="s_all_phones" checked>
+                                <label class="form-check-label" for="s_all_phones">Получать все телефоны контакта</label>
+                            </div>
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary">Запустить выгрузку</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="tab-pane fade" id="category-full-pane">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <div class="alert alert-warning">
+                    Полная выгрузка загружает все поля сделок, контактов и компаний из Bitrix24.
+                    При большом лимите процесс может занять много времени — при таймаутах увеличьте read_timeout в Настройках.
+                </div>
+                <form id="category-full-form">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Воронка / категория</label>
+                            <select class="form-select" name="category_id" id="full_category_id" required></select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Макс. количество сделок</label>
+                            <input type="number" class="form-control" name="limit" value="{{ max_export_size }}" min="1" max="{{ max_export_size }}">
+                            <div class="form-text">Максимум по настройкам: {{ max_export_size }}</div>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Исключённые сотрудники</label>
+                            <select class="form-select" name="excluded_user_ids" id="full_excluded_users" multiple size="6"></select>
+                            <div class="form-text">Удерживайте Ctrl для выбора нескольких сотрудников</div>
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary">Запустить полную выгрузку</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="mt-5">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="h5 mb-0">История выгрузок</h2>
+        <a href="/exports" class="btn btn-sm btn-outline-secondary">Вся история</a>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+            <tr>
+                <th>ID</th>
+                <th>Режим</th>
+                <th>Статус</th>
+                <th>Прогресс</th>
+                <th>Создана</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.id }}</td>
+                <td>{% if job.mode == 'region' %}Регион{% elif job.mode == 'region_lpr' %}ЛПР / Tomoru{% elif job.mode == 'category_full' %}Полная / воронка{% else %}Стадия{% endif %}</td>
+                <td><span class="badge status-{{ job.status }}">{{ job.status }}</span></td>
+                <td>{{ job.progress_percent }}%</td>
+                <td>{{ format_dt(job.created_at) }}</td>
+                <td><a href="/exports/{{ job.id }}" class="btn btn-sm btn-outline-primary">Открыть</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="text-muted text-center">Задач пока нет</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

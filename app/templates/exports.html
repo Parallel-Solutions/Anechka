@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}История выгрузок — Bitrix24 Export{% endblock %}
+{% block content %}
+<h1 class="h3 mb-4">История выгрузок</h1>
+<div class="table-responsive">
+    <table class="table table-hover align-middle">
+        <thead>
+        <tr>
+            <th>ID</th>
+            <th>Режим</th>
+            <th>Статус</th>
+            <th>Прогресс</th>
+            <th>Создана</th>
+            <th>Завершена</th>
+            <th></th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for job in jobs %}
+        <tr>
+            <td>{{ job.id }}</td>
+            <td>{% if job.mode == 'region' %}Регион{% elif job.mode == 'region_lpr' %}ЛПР / Tomoru{% elif job.mode == 'category_full' %}Полная / воронка{% else %}Стадия{% endif %}</td>
+            <td><span class="badge status-{{ job.status }}">{{ job.status }}</span></td>
+            <td>{{ job.progress_percent }}%</td>
+            <td>{{ format_dt(job.created_at) }}</td>
+            <td>{{ format_dt(job.finished_at) }}</td>
+            <td>
+                <a href="/exports/{{ job.id }}" class="btn btn-sm btn-outline-primary">Открыть</a>
+                {% if has_json_download(job) %}
+                <a href="/exports/{{ job.id }}/download" class="btn btn-sm btn-outline-success">XLSX</a>
+                <a href="/exports/{{ job.id }}/download/json" class="btn btn-sm btn-outline-secondary">JSON</a>
+                {% endif %}
+            </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="text-center text-muted">Нет задач</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Поля CRM{% endblock %}
+{% block content %}
+<h1 class="mb-3">Поля CRM</h1>
+<table class="table table-sm table-striped">
+    <thead><tr><th>Код</th><th>Название</th><th>Тип</th><th>UF</th><th>Описание</th><th>Значений</th><th>Источник</th><th>Review</th><th>Confidence</th></tr></thead>
+    <tbody>
+    {% for f in fields %}
+    <tr>
+        <td><code>{{ f.original_field_name }}</code></td>
+        <td>{{ f.title or '—' }}</td>
+        <td>{{ f.field_type }}</td>
+        <td>{{ 'Да' if f.is_custom else 'Нет' }}</td>
+        <td>{{ (f.semantic.short_description or f.semantic.display_name) if f.semantic else '—' }}</td>
+        <td>{{ f.filled_count }}</td>
+        <td>{{ 'данные' if f.discovered_from_payload else 'схема' }}</td>
+        <td>{{ 'нужна' if (f.semantic and f.semantic.needs_review) else '' }}</td>
+        <td>{{ f.semantic.confidence if f.semantic else '—' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="9" class="text-muted">Нет полей</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

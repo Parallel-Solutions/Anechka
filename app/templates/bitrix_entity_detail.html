@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Сущность {{ entity.entity_id }}{% endblock %}
+{% block content %}
+<h1 class="mb-3">{{ entity.title or entity.entity_id }}</h1>
+<ul class="nav nav-tabs mb-3" role="tablist">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#overview">Обзор</button></li>
+    {% if entity.entity_type_id in [1, 2] %}
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#contacts">Контакты ({{ linked_contacts|length }})</button></li>
+    {% endif %}
+    {% if entity.entity_type_id == 3 %}
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#parents">Сделки и лиды ({{ linked_parents|length }})</button></li>
+    {% endif %}
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#raw">Raw JSON</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#versions">Версии</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#children">Связанные</button></li>
+</ul>
+<div class="tab-content">
+    <div class="tab-pane fade show active" id="overview">
+        <dl class="row">
+            <dt class="col-sm-3">ID</dt><dd class="col-sm-9">{{ entity.entity_id }}</dd>
+            <dt class="col-sm-3">Тип</dt><dd class="col-sm-9">{{ entity.entity_type_id }}</dd>
+            <dt class="col-sm-3">Удалён</dt><dd class="col-sm-9">{{ entity.is_deleted }}</dd>
+            <dt class="col-sm-3">Hash</dt><dd class="col-sm-9"><code>{{ entity.payload_hash }}</code></dd>
+        </dl>
+    </div>
+    {% if entity.entity_type_id in [1, 2] %}
+    <div class="tab-pane fade" id="contacts">
+        <table class="table table-sm table-striped">
+            <thead><tr><th>ID</th><th>ФИО</th><th>Должность</th><th>Компания</th><th>Телефон</th><th>Основной</th><th></th></tr></thead>
+            <tbody>
+            {% for row in linked_contacts %}
+            <tr>
+                <td>{{ row.contact.contact_id }}</td>
+                <td>{{ row.contact.full_name or '—' }}</td>
+                <td>{{ row.contact.post or row.contact.post_custom or '—' }}</td>
+                <td>{{ row.contact.company_title or '—' }}</td>
+                <td>{{ row.contact.primary_phone or '—' }}</td>
+                <td>{{ '★' if row.link.is_primary else '' }}</td>
+                <td>
+                    {% if not row.contact.is_synthetic %}
+                    <a href="/bitrix-import/entities/3/{{ row.contact.contact_id }}">Открыть</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="text-muted">Нет привязанных контактов</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    {% if entity.entity_type_id == 3 %}
+    <div class="tab-pane fade" id="parents">
+        <table class="table table-sm table-striped">
+            <thead><tr><th>Тип</th><th>ID</th><th>Название</th><th>Стадия</th><th>Основной</th><th></th></tr></thead>
+            <tbody>
+            {% for row in linked_parents %}
+            <tr>
+                <td>{{ 'Сделка' if row.link.parent_entity_type_id == 2 else 'Лид' }}</td>
+                <td>{{ row.link.parent_entity_id }}</td>
+                <td>{{ row.parent.title if row.parent else '—' }}</td>
+                <td>{{ row.parent.stage_id if row.parent else '—' }}</td>
+                <td>{{ '★' if row.link.is_primary else '' }}</td>
+                <td><a href="/bitrix-import/entities/{{ row.link.parent_entity_type_id }}/{{ row.link.parent_entity_id }}">Открыть</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="6" class="text-muted">Нет привязанных сделок и лидов</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+    <div class="tab-pane fade" id="raw">
+        <pre class="bg-light p-3 small" style="max-height:600px;overflow:auto;">{{ raw_json }}</pre>
+    </div>
+    <div class="tab-pane fade" id="versions">
+        <table class="table table-sm"><thead><tr><th>ID</th><th>Hash</th><th>От</th><th>Источник</th></tr></thead>
+        <tbody>{% for v in versions %}<tr><td>{{ v.id }}</td><td><code>{{ v.payload_hash[:12] }}…</code></td><td>{{ v.valid_from }}</td><td>{{ v.change_source }}</td></tr>{% endfor %}</tbody></table>
+    </div>
+    <div class="tab-pane fade" id="children">
+        {% for c in child_records %}
+        <div class="mb-2"><strong>{{ c.record_type }}</strong> #{{ c.external_id }}</div>
+        {% else %}<p class="text-muted">Нет связанных данных</p>{% endfor %}
+    </div>
+</div>
+{% endblock %}

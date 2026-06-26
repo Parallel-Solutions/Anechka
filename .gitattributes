@@ -1,0 +1,2 @@
+*.sh text eol=lf
+database.sql filter=lfs diff=lfs merge=lfs -text

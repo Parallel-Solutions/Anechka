@@ -1,0 +1,95 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bitrix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bitrix}
+      POSTGRES_DB: ${POSTGRES_DB:-bitrix_export}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bitrix} -d ${POSTGRES_DB:-bitrix_export}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  db-restore:
+    build: .
+    env_file:
+      - .env
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      SEED_FILE: /seed/database.sql
+    volumes:
+      - ./database.sql:/seed/database.sql:ro
+    command: ["python", "scripts/restore_db.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  migrate:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bitrix}:${POSTGRES_PASSWORD:-bitrix}@db:5432/${POSTGRES_DB:-bitrix_export}
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      db:
+        condition: service_healthy
+      db-restore:
+        condition: service_completed_successfully
+    restart: "no"
+
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bitrix}:${POSTGRES_PASSWORD:-bitrix}@db:5432/${POSTGRES_DB:-bitrix_export}
+    volumes:
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+      - filestorage:/app/filestorage
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-bitrix}:${POSTGRES_PASSWORD:-bitrix}@db:5432/${POSTGRES_DB:-bitrix_export}
+    command: ["python", "-m", "app.worker"]
+    volumes:
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+      - filestorage:/app/filestorage
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+volumes:
+  pgdata:
+  filestorage:
