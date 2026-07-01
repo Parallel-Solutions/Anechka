@@ -11,12 +11,14 @@ from app.config import get_settings, merge_db_settings
 from app.database import SessionLocal
 from app.repositories.sync_repository import SyncRepository
 from app.services.bitrix_import.orchestrator import ImportOrchestrator
+from app.services.bitrix_import.scheduler_service import BitrixImportScheduler
 from app.services.settings_service import load_settings_from_db
 from app.utils.portal import portal_id_from_webhook
 
 logger = logging.getLogger(__name__)
 
 _shutdown = False
+_scheduler = BitrixImportScheduler()
 
 
 def _handle_signal(signum, frame):
@@ -39,6 +41,10 @@ def run_worker() -> None:
             recovered = sync_repo.recover_stale_runs(settings.worker_stale_run_minutes)
             if recovered:
                 logger.info("Recovered %s stale runs", recovered)
+
+            if db_settings.bitrix_webhook_url:
+                portal_id = portal_id_from_webhook(db_settings.bitrix_webhook_url)
+                _scheduler.maybe_enqueue(db, db_settings, portal_id)
 
             run = sync_repo.claim_next_run()
             if not run:

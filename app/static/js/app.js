@@ -276,18 +276,6 @@ function initLprConfig() {
         .map((line) => line.trim())
         .filter((line) => line.length > 0);
 
-    (async () => {
-        try {
-            const data = await fetchJson('/api/ai/lpr-config');
-            keywordsEl.value = toLines(data.keywords);
-            fieldsEl.value = toLines(data.fields);
-            if (stopwordsEl) stopwordsEl.value = toLines(data.stopwords);
-        } catch (e) {
-            resultEl.textContent = `Не удалось загрузить список: ${e.message}`;
-            resultEl.className = 'small text-danger';
-        }
-    })();
-
     saveBtn.addEventListener('click', async () => {
         resultEl.textContent = 'Сохранение…';
         resultEl.className = 'small text-muted';
@@ -319,6 +307,170 @@ function initExportDetail() {
     const eventLog = document.getElementById('event-log');
     const errorMessage = document.getElementById('error-message');
 
+    const dealsState = {
+        source: 'filter',
+        offset: 0,
+        limit: 50,
+        total: 0,
+        loading: false,
+    };
+
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function fmtDealCell(value) {
+        return value === null || value === undefined || value === '' ? '—' : escapeHtml(value);
+    }
+
+    function bitrixLink(url, label) {
+        if (!url) return '—';
+        return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+    }
+
+    function setDealsLoading(isLoading) {
+        dealsState.loading = isLoading;
+        document.getElementById('deals-loading').classList.toggle('d-none', !isLoading);
+    }
+
+    function renderDeals(data) {
+        const noteEl = document.getElementById('deals-note');
+        const emptyEl = document.getElementById('deals-empty');
+        const tableWrap = document.getElementById('deals-table-wrap');
+        const tbody = document.getElementById('deals-tbody');
+        const pager = document.getElementById('deals-pager');
+        const totalEl = document.getElementById('deals-total');
+        const pageInfo = document.getElementById('deals-page-info');
+
+        dealsState.total = data.total || 0;
+        noteEl.textContent = data.note || '';
+        noteEl.classList.toggle('text-warning', Boolean(data.note && !data.available));
+        totalEl.textContent = data.available ? `Всего: ${dealsState.total}` : '';
+
+        if (!data.available) {
+            emptyEl.textContent = data.note || 'Список недоступен';
+            emptyEl.classList.remove('d-none');
+            tableWrap.classList.add('d-none');
+            pager.classList.add('d-none');
+            tbody.innerHTML = '';
+            return;
+        }
+
+        if (!data.deals || data.deals.length === 0) {
+            emptyEl.textContent = 'Сделки не найдены';
+            emptyEl.classList.remove('d-none');
+            tableWrap.classList.add('d-none');
+            pager.classList.add('d-none');
+            tbody.innerHTML = '';
+            return;
+        }
+
+        emptyEl.classList.add('d-none');
+        tableWrap.classList.remove('d-none');
+        tbody.innerHTML = data.deals.map((deal) => {
+            const idCell = deal.bitrix_url
+                ? bitrixLink(deal.bitrix_url, deal.deal_id)
+                : fmtDealCell(deal.deal_id);
+            const titleCell = deal.bitrix_url
+                ? bitrixLink(deal.bitrix_url, deal.title || deal.deal_id)
+                : fmtDealCell(deal.title);
+            return (
+                '<tr>'
+                + `<td>${bitrixLink(deal.bitrix_url, 'Открыть')}</td>`
+                + `<td>${idCell}</td>`
+                + `<td>${titleCell}</td>`
+                + `<td>${fmtDealCell(deal.stage_name || deal.stage_id)}</td>`
+                + `<td>${fmtDealCell(deal.category_id)}</td>`
+                + `<td>${fmtDealCell(deal.created_time)}</td>`
+                + '</tr>'
+            );
+        }).join('');
+
+        const start = dealsState.offset + 1;
+        const end = dealsState.offset + data.deals.length;
+        pageInfo.textContent = `${start}–${end} из ${dealsState.total}`;
+        pager.classList.toggle('d-none', dealsState.total <= dealsState.limit);
+        document.getElementById('deals-prev').disabled = dealsState.offset <= 0;
+        document.getElementById('deals-next').disabled = dealsState.offset + dealsState.limit >= dealsState.total;
+    }
+
+    async function loadDeals() {
+        if (dealsState.loading) return;
+        setDealsLoading(true);
+        try {
+            const params = new URLSearchParams({
+                source: dealsState.source,
+                offset: String(dealsState.offset),
+                limit: String(dealsState.limit),
+            });
+            const resp = await fetch(`/api/exports/${jobId}/deals?${params}`);
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                renderDeals({
+                    available: false,
+                    total: 0,
+                    deals: [],
+                    note: err.detail || 'Не удалось загрузить список сделок',
+                });
+                return;
+            }
+            renderDeals(await resp.json());
+        } catch (_) {
+            renderDeals({
+                available: false,
+                total: 0,
+                deals: [],
+                note: 'Ошибка сети при загрузке сделок',
+            });
+        } finally {
+            setDealsLoading(false);
+        }
+    }
+
+    function activateDealsTab(source) {
+        dealsState.source = source;
+        dealsState.offset = 0;
+        document.querySelectorAll('#deals-tabs .nav-link').forEach((btn) => {
+            const active = btn.dataset.dealsSource === source;
+            btn.classList.toggle('active', active);
+        });
+        loadDeals();
+    }
+
+    function enableFileDealsTab() {
+        const fileTab = document.getElementById('deals-tab-file');
+        if (!fileTab) return;
+        fileTab.classList.remove('disabled');
+        fileTab.disabled = false;
+    }
+
+    document.getElementById('deals-tab-filter')?.addEventListener('click', () => {
+        activateDealsTab('filter');
+    });
+    document.getElementById('deals-tab-file')?.addEventListener('click', () => {
+        if (window.EXPORT_JOB_STATUS !== 'completed') return;
+        activateDealsTab('file');
+    });
+    document.getElementById('deals-prev')?.addEventListener('click', () => {
+        dealsState.offset = Math.max(0, dealsState.offset - dealsState.limit);
+        loadDeals();
+    });
+    document.getElementById('deals-next')?.addEventListener('click', () => {
+        if (dealsState.offset + dealsState.limit < dealsState.total) {
+            dealsState.offset += dealsState.limit;
+            loadDeals();
+        }
+    });
+
+    if (document.getElementById('deals-card')) {
+        loadDeals();
+    }
+
     function updateUI(data) {
         const pct = data.progress_percent || 0;
         progressBar.style.width = `${pct}%`;
@@ -337,6 +489,10 @@ function initExportDetail() {
         if (data.error_message) {
             errorMessage.textContent = data.error_message;
             errorMessage.classList.remove('d-none');
+        }
+        if (data.status === 'completed') {
+            window.EXPORT_JOB_STATUS = 'completed';
+            enableFileDealsTab();
         }
         if (data.status === 'completed' && !document.getElementById('btn-download')) {
             location.reload();

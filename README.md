@@ -42,6 +42,19 @@ docker compose up --build -d
 
 > **Клонирование репозитория:** `database.sql` хранится в Git LFS (~1.3 GB). После `git clone` выполните `git lfs pull`.
 
+**Кодировка seed-дампа:** не используйте перенаправление `> database.sql` в PowerShell/cmd — это ломает UTF-8. Для обновления дампа после исправления данных:
+
+```bash
+docker compose exec web python scripts/dump_db.py
+```
+
+Если в интерфейсе «кракозябры» вместо русского текста в диалогах/CRM, исправьте уже загруженные данные:
+
+```bash
+docker compose exec web python scripts/fix_mojibake.py --dry-run
+docker compose exec web python scripts/fix_mojibake.py
+```
+
 Данные сохраняются в Docker volumes (`pgdata`, `filestorage`) и каталогах `exports/`, `logs/` на хосте.
 
 Остановка: `docker compose down` (данные в volumes сохраняются). Полный сброс: `docker compose down -v`.
@@ -121,6 +134,34 @@ OPENAI_BITRIX_METADATA_MODEL=
 **http://localhost:8000/bitrix-import** — dashboard, запуск импорта, просмотр данных.
 
 Подробнее: **[BITRIX_IMPORT.md](BITRIX_IMPORT.md)**
+
+### Call Results (результаты прозвона)
+
+**http://localhost:8000/call-results** — загрузка CSV/XLSX/Tomoru, сопоставление со сделками, multi-signal классификация и подготовка операций Bitrix24.
+
+Workflow: upload → parse/match → classify (signals) → preview → execute (опционально).
+
+Ключевые переменные в `.env`:
+
+```env
+CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false   # true только после проверки preview на staging
+BITRIX_CALL_SOURCE_FIELD_CODE=                # UF-код «получен в ходе обзвона Анечкой»
+BITRIX_CALL_SOURCE_FIELD_VALUE=anechka_call
+POSITIVE_ACTIVITY_DEFAULT_DEADLINE=24h
+CALL_RESULTS_TIMEZONE=Europe/Moscow
+CALL_RESULTS_MAX_EXECUTION_RETRIES=3
+CONTACT_SEARCH_PROVIDER=fake
+```
+
+Execute: `POST /api/call-results/imports/{id}/execute` с `confirmation_token=EXECUTE` (требует флаг выше). Диагностика: `GET /api/call-results/diagnostics`.
+
+Подробный отчёт по изменениям: **[CALL_RESULTS_BUSINESS_LOGIC_FIX_REPORT.md](CALL_RESULTS_BUSINESS_LOGIC_FIX_REPORT.md)**
+
+Тесты call results:
+
+```bash
+docker compose exec web pytest tests/test_call_result_*.py tests/test_call_results_api.py -v --tb=short
+```
 
 Документация API: **http://localhost:8000/docs**
 

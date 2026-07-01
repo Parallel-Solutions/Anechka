@@ -132,6 +132,7 @@ class JobService:
                 )
                 result_path = tel_service.run_region_phones_export(params)
             elif job.mode == "region_lpr":
+                from app.services.auth_service import resolve_portal_id
                 from app.services.lpr_service import load_lpr_config
                 from app.services.lpr_tomoru_service import LprTomoruService
 
@@ -139,6 +140,8 @@ class JobService:
                     settings=settings,
                     cancel_check=cancel_check,
                     lpr_config=load_lpr_config(db),
+                    db=db,
+                    portal_id=resolve_portal_id(settings),
                     progress_callback=progress,
                     log_callback=log_event,
                 )

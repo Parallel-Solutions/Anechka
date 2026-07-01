@@ -1,0 +1,3 @@
+phone_number,status_display,call_result_display,attempts,last_attempt_at,data:Вход,data:Вход в диалог 2,data:Выход на лпр,data:номер ЛПР,data:Перевод,data:Вопрос 1,data:Вопрос 2,data:ТЗ,data:Когда закупка,data:Когда перезвонить лпр
+73436053007,Completed,Interrupted,1,2026-06-10T10:00:00Z,,"{""match"": ""секретарь"", ""transcription"": ""Добавочный 123""}","{""match"": ""123"", ""transcription"": ""добавочный один два три""}",,,,,,,
+73436053007,Not Started,No Answer,2,2026-06-12T10:00:00Z,,,,,,,,,,

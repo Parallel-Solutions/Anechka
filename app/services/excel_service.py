@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 from dataclasses import dataclass, field
@@ -238,6 +239,16 @@ class ExcelService:
                     cell.number_format = "@"
         self._finalize_sheet(ws_report, len(report_headers))
         wb.save(filepath)
+        return filepath
+
+    @staticmethod
+    def write_tomoru_numbers_csv(phones: list[str], filepath: Path) -> Path:
+        """CSV для Tomoru: одна колонка phone_number (7XXXXXXXXXX)."""
+        with open(filepath, "w", encoding="utf-8-sig", newline="") as fh:
+            writer = csv.writer(fh, delimiter=";")
+            writer.writerow(["phone_number"])
+            for phone in phones:
+                writer.writerow([sanitize_excel_value(str(phone))])
         return filepath
 
     def build_deals_contacts(

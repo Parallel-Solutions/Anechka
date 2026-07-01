@@ -20,6 +20,9 @@ def _engine_kwargs(url: str) -> dict:
         kwargs["connect_args"] = {"check_same_thread": False}
     elif url.startswith("postgresql"):
         kwargs["connect_args"] = {"connect_timeout": 5}
+        kwargs["pool_size"] = 10
+        kwargs["max_overflow"] = 20
+        kwargs["pool_timeout"] = 30
     return kwargs
 
 

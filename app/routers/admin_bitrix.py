@@ -39,6 +39,11 @@ from app.schemas_bitrix import (
     MessageResponse,
 )
 from app.services.bitrix_client import BitrixClient
+from app.services.bitrix_import.import_queue_service import (
+    ConcurrentImportError,
+    FullImportNotConfirmedError,
+    enqueue_import,
+)
 from app.utils.portal import portal_id_from_webhook
 
 router = APIRouter(prefix="/admin/bitrix", tags=["admin-bitrix"])
@@ -125,6 +130,8 @@ def dashboard(db: Session = Depends(get_db)):
         worker_active=active,
         last_sync_run=_run_to_response(last_run) if last_run else None,
         last_error=last_run.last_error if last_run else None,
+        schedule_enabled=settings.bitrix_import_schedule_enabled,
+        schedule_interval_minutes=settings.bitrix_import_schedule_interval_minutes,
     )
 
 
@@ -137,23 +144,19 @@ def create_import(body: ImportCreateRequest, db: Session = Depends(get_db)):
     portal = _portal(db)
     sync_repo = SyncRepository(db)
 
-    mode = body.mode
-    if mode == "full" and not body.confirm_full:
+    try:
+        run = enqueue_import(
+            sync_repo,
+            portal,
+            mode=body.mode,
+            analyze_metadata=body.analyze_metadata,
+            confirm_full=body.confirm_full,
+        )
+    except FullImportNotConfirmedError:
         raise HTTPException(status_code=400, detail="Для полного импорта требуется confirm_full=true")
-
-    if mode == "incremental":
-        cp = sync_repo.get_checkpoint(portal, "entities", ENTITY_LEAD)
-        if cp is None or cp.cursor_time is None:
-            mode = "full"
-
-    if sync_repo.has_active_run(portal):
+    except ConcurrentImportError:
         raise HTTPException(status_code=409, detail="Импорт уже выполняется")
 
-    run = sync_repo.create_run(
-        portal,
-        mode,
-        statistics={"analyze_metadata": body.analyze_metadata},
-    )
     return MessageResponse(message="Импорт поставлен в очередь", import_id=run.id)
 
 

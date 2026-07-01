@@ -228,3 +228,182 @@ def write_export_json(xlsx_path: Path, payload: dict[str, Any]) -> Path:
         encoding="utf-8",
     )
     return json_path
+
+
+DEAL_ID_HEADERS = frozenset(
+    {"id сделки", "deal_id", "deal id", "id", "dealid", "сделка id"}
+)
+DEAL_TITLE_HEADERS = frozenset(
+    {"название сделки", "deal_title", "deal title", "title", "название", "name"}
+)
+
+
+def _normalize_deal_item(
+    deal_id: Any,
+    title: Any = "",
+    *,
+    stage_id: Any = None,
+    category_id: Any = None,
+    created_time: Any = None,
+) -> dict[str, Any] | None:
+    if deal_id is None or deal_id == "":
+        return None
+    try:
+        normalized_id = int(deal_id)
+    except (TypeError, ValueError):
+        return None
+    return {
+        "deal_id": normalized_id,
+        "title": _cell_str(title),
+        "stage_id": _cell_str(stage_id) if stage_id is not None else None,
+        "category_id": int(category_id) if category_id not in (None, "") else None,
+        "created_time": _cell_str(created_time) if created_time is not None else None,
+    }
+
+
+def _deal_from_row_dict(row: dict[str, Any]) -> dict[str, Any] | None:
+    deal_id: Any = None
+    title: Any = ""
+    stage_id: Any = None
+    category_id: Any = None
+    created_time: Any = None
+    for key, val in row.items():
+        if key is None:
+            continue
+        k = _cell_str(key).strip().lower()
+        if k in DEAL_ID_HEADERS:
+            deal_id = val
+        elif k in DEAL_TITLE_HEADERS:
+            title = val
+        elif k in {"stage_id", "stage", "стадия"}:
+            stage_id = val
+        elif k in {"category_id", "category", "воронка"}:
+            category_id = val
+        elif k in {"created_time", "date_create", "дата создания"}:
+            created_time = val
+    return _normalize_deal_item(
+        deal_id,
+        title,
+        stage_id=stage_id,
+        category_id=category_id,
+        created_time=created_time,
+    )
+
+
+def _dedupe_deals(deals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for deal in deals:
+        did = deal["deal_id"]
+        if did in seen:
+            continue
+        seen.add(did)
+        out.append(deal)
+    return out
+
+
+def _read_intelligent_export_data(wb) -> list[dict[str, Any]]:
+    deals: list[dict[str, Any]] = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        for row in _read_table_sheet(ws):
+            deal = _deal_from_row_dict(row)
+            if deal is not None:
+                deals.append(deal)
+    return _dedupe_deals(deals)
+
+
+def _deals_from_legacy_payload(mode: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    deals: list[dict[str, Any]] = []
+    if mode == "region":
+        for item in data.get("deals", []):
+            deal = _normalize_deal_item(item.get("deal_id"), item.get("deal_title"))
+            if deal is not None:
+                deals.append(deal)
+        return deals
+
+    if mode == "stage":
+        rows = data.get("rows", [])
+        if data.get("format") == "wide":
+            for item in rows:
+                deal = _normalize_deal_item(item.get("deal_id"), item.get("deal_title"))
+                if deal is not None:
+                    deals.append(deal)
+            return _dedupe_deals(deals)
+        for row in rows:
+            deal = _deal_from_row_dict(row)
+            if deal is not None:
+                deals.append(deal)
+        return _dedupe_deals(deals)
+
+    if mode == "region_lpr":
+        for row in data.get("report", []):
+            deal = _normalize_deal_item(row.get("deal_id"), row.get("deal_title"))
+            if deal is not None:
+                deals.append(deal)
+        return _dedupe_deals(deals)
+
+    if mode == "category_full":
+        for row in data.get("deals", []):
+            deal = _deal_from_row_dict(row)
+            if deal is not None:
+                deals.append(deal)
+        return _dedupe_deals(deals)
+
+    return []
+
+
+def extract_deals_from_result(path: Path, mode: str) -> tuple[list[dict[str, Any]], bool, str | None]:
+    """Extract unique deals from a completed export file.
+
+    Returns (deals, available, note).
+    """
+    if not path.is_file():
+        return [], False, "Файл выгрузки не найден"
+
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        json_path = path.with_suffix(".json")
+        if json_path.is_file():
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            file_mode = payload.get("meta", {}).get("mode") or mode
+            data = payload.get("data", {})
+            deals = _deals_from_legacy_payload(file_mode, data)
+            if deals:
+                return deals, True, None
+            return (
+                [],
+                False,
+                "В файле выгрузки не найдены сделки (CSV содержит только телефоны)",
+            )
+        return [], False, "Для CSV-выгрузки не найден JSON с данными о сделках"
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        if mode == "intelligent_export":
+            deals = _read_intelligent_export_data(wb)
+            if not deals:
+                return (
+                    [],
+                    False,
+                    "В файле выгрузки нет ID сделок — только контакты или другие данные",
+                )
+            return deals, True, None
+
+        if mode == "category_full":
+            data = _read_category_full_data(wb)
+        elif mode == "stage":
+            data = _read_stage_data(wb)
+        elif mode == "region":
+            data = _read_region_data(wb)
+        elif mode == "region_lpr":
+            data = _read_lpr_data(wb)
+        else:
+            return [], False, f"Режим {mode} не поддерживает извлечение сделок из файла"
+
+        deals = _deals_from_legacy_payload(mode, data)
+        if not deals:
+            return [], False, "В файле выгрузки не найдены сделки"
+        return deals, True, None
+    finally:
+        wb.close()

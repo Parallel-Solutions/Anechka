@@ -1,0 +1,961 @@
+{% extends "base.html" %}
+{% block title %}Выгрузка для Tomoru{% endblock %}
+{% block content %}
+<div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-2">
+    <div>
+        <h1 class="h3 mb-1">Выгрузка для Tomoru</h1>
+        <p class="text-muted mb-0">Сделки по фильтрам из локальной БД CRM — со ссылками на карточки в Bitrix24.</p>
+    </div>
+    <div>
+        {% if bitrix_connected %}
+        <span class="badge bg-success">Bitrix24: подключено</span>
+        {% else %}
+        <span class="badge bg-secondary">Справочники: Bitrix не подключён</span>
+        {% endif %}
+        {% if sync_state %}
+        <span class="badge bg-{% if sync_state.state == 'blocked' %}danger{% elif sync_state.state == 'warning' %}warning text-dark{% else %}info{% endif %} ms-1">
+            Импорт CRM: {% if sync_state.last_successful_sync_at %}{{ sync_state.last_successful_sync_at[:16].replace('T', ' ') }} UTC{% else %}нет данных{% endif %}
+        </span>
+        {% endif %}
+    </div>
+</div>
+{% if sync_state and sync_state.state != 'normal' %}
+<div class="alert alert-{% if sync_state.state == 'blocked' %}danger{% else %}warning{% endif %} py-2">
+    Данные CRM могут отставать от Bitrix24. Перед выгрузкой запустите инкрементальный импорт в разделе «Импорт Bitrix».
+</div>
+{% endif %}
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <form id="tomoru-form">
+            <div class="row g-3">
+                <div class="col-md-6" id="category-wrap">
+                    <label class="form-label">Воронка</label>
+                    <select class="form-select" name="category_id" id="category_id"></select>
+                    <div class="form-text">На чистой главной поле пустое. При открытии ссылки с фильтрами воронка подставляется автоматически.</div>
+                </div>
+                <div class="col-md-6 d-none" id="stage-wrap">
+                    <label class="form-label" id="stage-label">Стадия</label>
+                    <select class="form-select" name="stage_id" id="stage_id" multiple></select>
+                    <div class="form-text">Можно выбрать несколько. Пустой выбор — любая стадия.</div>
+                </div>
+                <div class="col-md-6" id="region-wrap">
+                    <label class="form-label">Регион</label>
+                    <select class="form-select" name="region_id" id="region_id" multiple></select>
+                    <div class="form-text">Справочник Bitrix (инфоблок 49). Можно выбрать несколько.</div>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Период создания</label>
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <input type="text" class="form-control" id="date_from" placeholder="С" autocomplete="off">
+                        </div>
+                        <div class="col-6">
+                            <input type="text" class="form-control" id="date_to" placeholder="По" autocomplete="off">
+                        </div>
+                    </div>
+                    <div class="form-text">Можно указать только начало, только конец или обе даты.</div>
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary" id="submit-btn">Запустить выгрузку</button>
+                    <span id="form-message" class="ms-3 small text-muted"></span>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+<div class="card shadow-sm mb-4" id="deals-preview-card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Сделки и контакты</span>
+        <span class="small text-muted" id="deals-total"></span>
+    </div>
+    <div class="card-body">
+        <div id="deals-note" class="small text-muted mb-2"></div>
+        <div id="deals-placeholder" class="text-muted small">Выберите стадию, регион или период — тогда здесь появится превью сделок.</div>
+        <div id="deals-loading" class="text-muted small d-none">Загрузка…</div>
+        <div id="deals-empty" class="text-muted small d-none">Сделки не найдены</div>
+        <div class="table-responsive d-none" id="deals-table-wrap">
+            <table class="table table-sm table-bordered mb-0">
+                <thead>
+                    <tr>
+                        <th>Bitrix</th>
+                        <th>ID</th>
+                        <th>Название</th>
+                        <th>Стадия</th>
+                        <th>Дата создания</th>
+                    </tr>
+                </thead>
+                <tbody id="deals-tbody"></tbody>
+            </table>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-3 d-none" id="deals-pager">
+            <button class="btn btn-outline-secondary btn-sm" id="deals-prev" type="button">← Назад</button>
+            <span class="small text-muted" id="deals-page-info"></span>
+            <button class="btn btn-outline-secondary btn-sm" id="deals-next" type="button">Вперёд →</button>
+        </div>
+    </div>
+</div>
+<section class="mt-5" id="jobs-history">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="h5 mb-0">Последние Tomoru-выгрузки</h2>
+        <a href="/exports" class="btn btn-sm btn-outline-secondary">Вся история</a>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle">
+            <thead>
+            <tr>
+                <th>ID</th>
+                <th>Статус</th>
+                <th>Прогресс</th>
+                <th>Создана</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.id }}</td>
+                <td><span class="badge status-{{ job.status }}">{{ job.status }}</span></td>
+                <td>{{ job.progress_percent }}%</td>
+                <td>{{ format_dt(job.created_at) }}</td>
+                <td><a href="/exports/{{ job.id }}" class="btn btn-sm btn-outline-primary">Открыть</a></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" class="text-muted text-center">Задач пока нет</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<link href="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/css/tom-select.bootstrap5.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/js/tom-select.complete.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/flatpickr.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr@4.6.13/dist/l10n/ru.js"></script>
+<script>
+(function(){
+    const DEFAULT_CATEGORY = 15;
+    const PAGE_SIZE = 50;
+    const TOMORU_APP_URL = 'https://app.tomoru.ru/org/parallelnye-resheniya';
+    const BITRIX_CONNECTED = {{ 'true' if bitrix_connected else 'false' }};
+    const form = document.getElementById('tomoru-form');
+    const categorySelect = document.getElementById('category_id');
+    const stageWrap = document.getElementById('stage-wrap');
+    const stageSelect = document.getElementById('stage_id');
+    const regionSelect = document.getElementById('region_id');
+    const dateFromInput = document.getElementById('date_from');
+    const dateToInput = document.getElementById('date_to');
+    const message = document.getElementById('form-message');
+    const submitBtn = document.getElementById('submit-btn');
+    let stageTomSelect = null;
+    let regionTomSelect = null;
+    let dateFromPicker = null;
+    let dateToPicker = null;
+    const dealsState = {
+        offset: 0,
+        limit: PAGE_SIZE,
+        total: 0,
+        loading: false,
+    };
+    const contactOverrides = {};
+    const manuallyChangedDeals = new Set();
+    const saveContactTimers = {};
+    const submitBtnDefaultText = submitBtn.textContent;
+    let applyingFromUrl = false;
+    function formatIsoDate(d) {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return y + '-' + m + '-' + day;
+    }
+    function parseIsoDate(str) {
+        if (!str) return null;
+        const parts = str.split('-');
+        if (parts.length !== 3) return null;
+        const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+        return isNaN(d.getTime()) ? null : d;
+    }
+    function readDateRangeFromPicker() {
+        const fromDates = dateFromPicker ? dateFromPicker.selectedDates : [];
+        const toDates = dateToPicker ? dateToPicker.selectedDates : [];
+        return {
+            date_from: fromDates[0] ? formatIsoDate(fromDates[0]) : '',
+            date_to: toDates[0] ? formatIsoDate(toDates[0]) : '',
+        };
+    }
+    function syncDatePickerConstraints() {
+        if (dateFromPicker && dateToPicker) {
+            const from = dateFromPicker.selectedDates[0] || null;
+            const to = dateToPicker.selectedDates[0] || null;
+            dateToPicker.set('minDate', from);
+            dateFromPicker.set('maxDate', to);
+        }
+    }
+    function setDateFieldsOnPickers(dateFrom, dateTo) {
+        if (dateFromPicker) {
+            const from = parseIsoDate(dateFrom);
+            if (from) {
+                dateFromPicker.setDate(from, false);
+            } else {
+                dateFromPicker.clear(false);
+            }
+        }
+        if (dateToPicker) {
+            const to = parseIsoDate(dateTo);
+            if (to) {
+                dateToPicker.setDate(to, false);
+            } else {
+                dateToPicker.clear(false);
+            }
+        }
+        syncDatePickerConstraints();
+    }
+    function initDatePickers() {
+        if (typeof flatpickr === 'undefined') return;
+        const fpOptions = {
+            mode: 'single',
+            dateFormat: 'Y-m-d',
+            locale: flatpickr.l10ns.ru,
+            allowInput: false,
+            onChange: function() {
+                syncDatePickerConstraints();
+                onFilterChange({ offset: 0 });
+            },
+        };
+        dateFromPicker = flatpickr(dateFromInput, fpOptions);
+        dateToPicker = flatpickr(dateToInput, fpOptions);
+    }
+    function defaultFilterState() {
+        return {
+            category_id: null,
+            stage_ids: [],
+            region_ids: [],
+            date_from: '',
+            date_to: '',
+            offset: 0,
+        };
+    }
+    function readCategoryFromForm() {
+        const raw = categorySelect.value;
+        if (!raw) return null;
+        const cid = parseInt(raw, 10);
+        return isNaN(cid) ? null : cid;
+    }
+    function inferCategoryId(params, stageIds) {
+        for (const id of stageIds) {
+            const m = /^C(\d+):/.exec(id);
+            if (m) return parseInt(m[1], 10);
+        }
+        const hasFilter = stageIds.length > 0
+            || params.getAll('region_id').filter(Boolean).length > 0
+            || Boolean(params.get('date_from'))
+            || Boolean(params.get('date_to'));
+        if (hasFilter) return DEFAULT_CATEGORY;
+        return null;
+    }
+    function parseFiltersFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const state = defaultFilterState();
+        state.stage_ids = params.getAll('stage_id').filter(Boolean);
+        state.region_ids = params.getAll('region_id')
+            .map((id) => parseInt(id, 10))
+            .filter((id) => !isNaN(id));
+        state.date_from = params.get('date_from') || '';
+        state.date_to = params.get('date_to') || '';
+        if (params.has('category_id')) {
+            const cid = parseInt(params.get('category_id'), 10);
+            if (!isNaN(cid)) state.category_id = cid;
+        } else {
+            state.category_id = inferCategoryId(params, state.stage_ids);
+        }
+        if (params.has('offset')) {
+            const off = parseInt(params.get('offset'), 10);
+            if (!isNaN(off) && off >= 0) state.offset = off;
+        }
+        return state;
+    }
+    function buildUrlFromFilters(state) {
+        const params = new URLSearchParams();
+        if (state.category_id != null) {
+            params.set('category_id', String(state.category_id));
+        }
+        state.stage_ids.forEach((id) => params.append('stage_id', id));
+        state.region_ids.forEach((id) => params.append('region_id', String(id)));
+        if (state.date_from) params.set('date_from', state.date_from);
+        if (state.date_to) params.set('date_to', state.date_to);
+        if (state.offset > 0) {
+            params.set('offset', String(state.offset));
+        }
+        const qs = params.toString();
+        return qs ? '?' + qs : '';
+    }
+    function readFiltersFromForm(overrides) {
+        const regions = getSelectedRegions();
+        const dateRange = readDateRangeFromPicker();
+        return Object.assign({
+            category_id: readCategoryFromForm(),
+            stage_ids: getSelectedStages(),
+            region_ids: regions.map((r) => r.id),
+            date_from: dateRange.date_from,
+            date_to: dateRange.date_to,
+            offset: 0,
+        }, overrides || {});
+    }
+    function updateStageVisibility(show) {
+        stageWrap.classList.toggle('d-none', !show);
+    }
+    function hasActiveFilters(state) {
+        const f = state || parseFiltersFromUrl();
+        return f.stage_ids.length > 0
+            || f.region_ids.length > 0
+            || Boolean(f.date_from)
+            || Boolean(f.date_to);
+    }
+    function optionExists(selectEl, value) {
+        return Array.from(selectEl.options).some((o) => o.value === String(value));
+    }
+    async function applyFiltersToForm(state, options) {
+        const silent = !options || options.silent !== false;
+        applyingFromUrl = true;
+        try {
+            if (state.category_id != null && optionExists(categorySelect, state.category_id)) {
+                const needsReload = categorySelect.value !== String(state.category_id);
+                categorySelect.value = String(state.category_id);
+                if (needsReload || !stageTomSelect) {
+                    await loadStagesForDeal();
+                }
+                updateStageVisibility(true);
+            } else {
+                categorySelect.value = '';
+                resetStages();
+                initStageTomSelect();
+                updateStageVisibility(false);
+            }
+            setDateFieldsOnPickers(state.date_from, state.date_to);
+            dealsState.offset = state.offset;
+            const validStageIds = state.stage_ids.filter((id) => optionExists(stageSelect, id));
+            if (stageTomSelect) {
+                stageTomSelect.setValue(validStageIds, silent);
+            }
+            const validRegionIds = state.region_ids
+                .filter((id) => optionExists(regionSelect, id))
+                .map(String);
+            if (regionTomSelect) {
+                regionTomSelect.setValue(validRegionIds, silent);
+            }
+        } finally {
+            applyingFromUrl = false;
+        }
+    }
+    async function navigateFilters(state, options) {
+        const fromPopstate = options && options.fromPopstate === true;
+        if (!fromPopstate) {
+            const query = buildUrlFromFilters(state);
+            const newUrl = window.location.pathname + query;
+            if (window.location.pathname + window.location.search !== newUrl) {
+                history.pushState(null, '', newUrl);
+            }
+        }
+        await applyFiltersToForm(state, { silent: true });
+        maybeLoadDealsPreview();
+    }
+    function onFilterChange(overrides) {
+        if (applyingFromUrl) return;
+        clearContactOverrides();
+        navigateFilters(readFiltersFromForm(overrides));
+    }
+    function setMessage(text, isError){
+        message.textContent = text || '';
+        message.classList.toggle('text-danger', !!isError);
+        message.classList.toggle('text-muted', !isError);
+    }
+    function parseContentDispositionFilename(header) {
+        if (!header) return null;
+        const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8Match) {
+            try {
+                return decodeURIComponent(utf8Match[1]);
+            } catch (e) {
+                return utf8Match[1];
+            }
+        }
+        const plainMatch = header.match(/filename="?([^";]+)"?/i);
+        return plainMatch ? plainMatch[1] : null;
+    }
+    function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+    function fmtDealCell(value) {
+        return value === null || value === undefined || value === '' ? '—' : escapeHtml(value);
+    }
+    function bitrixLink(url, label) {
+        if (!url) return '—';
+        return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+    }
+    const COMPANY_PHONE_ID = 0;
+    function getOverrideSelection(dealKey) {
+        if (!contactOverrides[dealKey]) {
+            contactOverrides[dealKey] = [];
+        }
+        return contactOverrides[dealKey];
+    }
+    function clearContactOverrides() {
+        Object.keys(contactOverrides).forEach((k) => delete contactOverrides[k]);
+        manuallyChangedDeals.clear();
+    }
+    function isSelectionSelected(dealId, selectionId, apiSelected) {
+        const dealKey = String(dealId);
+        if (manuallyChangedDeals.has(dealKey)) {
+            return getOverrideSelection(dealKey).includes(selectionId);
+        }
+        return apiSelected;
+    }
+    function saveContactSelection(dealId, contactIds) {
+        const dealKey = String(dealId);
+        if (saveContactTimers[dealKey]) {
+            clearTimeout(saveContactTimers[dealKey]);
+        }
+        saveContactTimers[dealKey] = setTimeout(async () => {
+            try {
+                const resp = await fetch('/api/tomoru/deals/' + encodeURIComponent(dealId) + '/contact-selection', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({contact_ids: contactIds}),
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    setMessage(err.detail || 'Не удалось сохранить выбор контактов', true);
+                }
+            } catch (_) {
+                setMessage('Ошибка сети при сохранении выбора контактов', true);
+            }
+        }, 300);
+    }
+    function onSelectionCheckboxChange(dealId) {
+        const dealKey = String(dealId);
+        manuallyChangedDeals.add(dealKey);
+        const selection = [];
+        document.querySelectorAll('.contact-export-cb[data-deal-id="' + dealId + '"]').forEach((el) => {
+            if (el.checked) {
+                selection.push(parseInt(el.dataset.contactId, 10));
+            }
+        });
+        contactOverrides[dealKey] = selection;
+        saveContactSelection(dealId, selection.slice());
+    }
+    function setDealsLoading(isLoading) {
+        dealsState.loading = isLoading;
+        document.getElementById('deals-loading').classList.toggle('d-none', !isLoading);
+    }
+    function showPreviewPlaceholder() {
+        dealsState.total = 0;
+        document.getElementById('deals-total').textContent = '';
+        document.getElementById('deals-note').textContent = '';
+        document.getElementById('deals-note').classList.remove('text-warning');
+        document.getElementById('deals-placeholder').classList.remove('d-none');
+        document.getElementById('deals-empty').classList.add('d-none');
+        document.getElementById('deals-table-wrap').classList.add('d-none');
+        document.getElementById('deals-pager').classList.add('d-none');
+        document.getElementById('deals-tbody').innerHTML = '';
+        setDealsLoading(false);
+    }
+    function maybeLoadDealsPreview() {
+        if (!hasActiveFilters()) {
+            showPreviewPlaceholder();
+            return;
+        }
+        loadDealsPreview();
+    }
+    function getEntityType() {
+        return 'deal';
+    }
+    function multiTomSelectOptions(placeholder) {
+        return {
+            create: false,
+            placeholder: placeholder,
+            maxOptions: null,
+            maxItems: null,
+            plugins: ['remove_button'],
+        };
+    }
+    function resetStageSelect() {
+        if (stageTomSelect) {
+            stageTomSelect.destroy();
+            stageTomSelect = null;
+        }
+        stageSelect.innerHTML = '';
+    }
+    function initStageTomSelect(placeholder) {
+        if (typeof TomSelect === 'undefined') return;
+        stageTomSelect = new TomSelect('#stage_id', multiTomSelectOptions(placeholder || '— любая —'));
+        stageTomSelect.on('change', () => {
+            onFilterChange({ offset: 0 });
+        });
+    }
+    function resetRegionSelect(){
+        if(regionTomSelect){
+            regionTomSelect.destroy();
+            regionTomSelect = null;
+        }
+        regionSelect.innerHTML = '';
+    }
+    function initRegionTomSelect(){
+        if(typeof TomSelect === 'undefined') return;
+        regionTomSelect = new TomSelect('#region_id', multiTomSelectOptions('— любой регион —'));
+        if(!BITRIX_CONNECTED){
+            regionTomSelect.disable();
+        }
+        regionTomSelect.on('change', () => {
+            onFilterChange({ offset: 0 });
+        });
+    }
+    async function loadRegions(){
+        resetRegionSelect();
+        if(!BITRIX_CONNECTED){
+            initRegionTomSelect();
+            return;
+        }
+        try {
+            const resp = await fetch('/api/regions');
+            if(!resp.ok) throw new Error('HTTP ' + resp.status);
+            const regions = await resp.json();
+            regions.forEach(r => {
+                const o = document.createElement('option');
+                o.value = r.id;
+                o.textContent = r.name;
+                regionSelect.appendChild(o);
+            });
+            initRegionTomSelect();
+        } catch(e) {
+            initRegionTomSelect();
+            setMessage('Не удалось загрузить регионы: ' + e.message, true);
+        }
+    }
+    function clearRegionSelection(){
+        if(regionTomSelect){
+            regionTomSelect.setValue([]);
+        } else {
+            regionSelect.value = '';
+        }
+    }
+    function clearStageSelection(){
+        if(stageTomSelect){
+            stageTomSelect.setValue([]);
+        } else {
+            stageSelect.value = '';
+        }
+    }
+    function getSelectedStages(){
+        const val = stageTomSelect ? stageTomSelect.getValue() : [];
+        const ids = Array.isArray(val) ? val : (val ? [val] : []);
+        return ids.filter(Boolean);
+    }
+    function getSelectedRegions(){
+        const val = regionTomSelect ? regionTomSelect.getValue() : [];
+        const ids = Array.isArray(val) ? val : (val ? [val] : []);
+        return ids.filter(Boolean).map(id => {
+            const opt = regionSelect.querySelector('option[value="' + id + '"]');
+            return {
+                id: parseInt(id, 10),
+                name: opt ? opt.textContent : null,
+            };
+        });
+    }
+    function sourceLabel(source) {
+        return source === 'company' ? 'Компания' : 'Сделка';
+    }
+    function renderCompanyBlock(company, dealId) {
+        if (!company) {
+            return (
+                '<tr class="table-light">'
+                + '<td colspan="5" class="p-0">'
+                + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
+                + '<thead><tr class="small text-muted">'
+                + '<th class="ps-4" colspan="6">Компания</th>'
+                + '</tr></thead><tbody>'
+                + '<tr class="table-light">'
+                + '<td colspan="6" class="small text-muted ps-4">Компания не указана</td>'
+                + '</tr></tbody></table></td></tr>'
+            );
+        }
+        const nameCell = company.bitrix_url
+            ? bitrixLink(company.bitrix_url, company.title || company.company_id)
+            : fmtDealCell(company.title || company.company_id);
+        const desc = company.description || '';
+        const descCell = desc
+            ? `<span class="text-break d-inline-block" style="max-width:280px" title="${escapeHtml(desc)}">${escapeHtml(desc)}</span>`
+            : '—';
+        const hasPhone = Boolean(company.phone);
+        const companyChecked = isSelectionSelected(dealId, COMPANY_PHONE_ID, Boolean(company.selected_for_export));
+        const disabledAttr = hasPhone ? '' : ' disabled';
+        const titleAttr = hasPhone ? ' title="Телефон компании"' : ' title="Телефон компании не указан"';
+        return (
+            '<tr class="table-light">'
+            + '<td colspan="5" class="p-0">'
+            + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
+            + '<thead><tr class="small text-muted">'
+            + '<th class="ps-4">Название</th><th>Описание</th><th>Телефон</th><th>Источник</th><th>Выгрузка</th>'
+            + '</tr></thead><tbody>'
+            + '<tr class="table-light">'
+            + `<td class="ps-4">${nameCell}</td>`
+            + `<td>${descCell}</td>`
+            + `<td>${fmtDealCell(company.phone)}</td>`
+            + '<td>Компания</td>'
+            + '<td class="text-center">'
+            + `<input type="checkbox" class="contact-export-cb company-export-cb form-check-input m-0"`
+            + ` data-deal-id="${dealId}" data-contact-id="${COMPANY_PHONE_ID}"`
+            + (companyChecked ? ' checked' : '')
+            + disabledAttr
+            + titleAttr
+            + '></td>'
+            + '</tr></tbody></table></td></tr>'
+        );
+    }
+    function renderContactRows(contacts, dealId) {
+        if (!contacts || contacts.length === 0) {
+            return (
+                '<tr class="table-light">'
+                + '<td colspan="6" class="small text-muted ps-4">Контактов нет</td>'
+                + '</tr>'
+            );
+        }
+        return contacts.map((contact) => {
+            const nameCell = contact.bitrix_url
+                ? bitrixLink(contact.bitrix_url, contact.full_name || contact.contact_id)
+                : fmtDealCell(contact.full_name || contact.contact_id);
+            const desc = contact.description || '';
+            const descCell = desc
+                ? `<span class="text-break d-inline-block" style="max-width:280px" title="${escapeHtml(desc)}">${escapeHtml(desc)}</span>`
+                : '—';
+            const primaryMark = contact.is_primary ? ' ★' : '';
+            const checked = isSelectionSelected(dealId, contact.contact_id, contact.selected_for_export);
+            const titleAttr = contact.selection_reason
+                ? ` title="${escapeHtml(contact.selection_reason)}"`
+                : '';
+            return (
+                '<tr class="table-light">'
+                + `<td class="ps-4">${nameCell}${primaryMark}</td>`
+                + `<td>${fmtDealCell(contact.post)}</td>`
+                + `<td>${descCell}</td>`
+                + `<td>${fmtDealCell(contact.phone)}</td>`
+                + `<td>${sourceLabel(contact.source)}</td>`
+                + `<td class="text-center">`
+                + `<input type="checkbox" class="contact-export-cb form-check-input m-0"`
+                + ` data-deal-id="${dealId}" data-contact-id="${contact.contact_id}"`
+                + (checked ? ' checked' : '')
+                + titleAttr
+                + `></td>`
+                + '</tr>'
+            );
+        }).join('');
+    }
+    function renderDeals(data) {
+        const noteEl = document.getElementById('deals-note');
+        const placeholderEl = document.getElementById('deals-placeholder');
+        const emptyEl = document.getElementById('deals-empty');
+        const tableWrap = document.getElementById('deals-table-wrap');
+        const tbody = document.getElementById('deals-tbody');
+        const pager = document.getElementById('deals-pager');
+        const totalEl = document.getElementById('deals-total');
+        const pageInfo = document.getElementById('deals-page-info');
+        dealsState.total = data.total || 0;
+        placeholderEl.classList.add('d-none');
+        noteEl.textContent = data.note || '';
+        noteEl.classList.toggle('text-warning', Boolean(data.note && !data.available));
+        totalEl.textContent = data.available ? `Всего: ${dealsState.total}` : '';
+        if (!data.available) {
+            emptyEl.textContent = data.note || 'Список недоступен';
+            emptyEl.classList.remove('d-none');
+            tableWrap.classList.add('d-none');
+            pager.classList.add('d-none');
+            tbody.innerHTML = '';
+            return;
+        }
+        if (!data.deals || data.deals.length === 0) {
+            emptyEl.textContent = 'Сделки не найдены';
+            emptyEl.classList.remove('d-none');
+            tableWrap.classList.add('d-none');
+            pager.classList.add('d-none');
+            tbody.innerHTML = '';
+            return;
+        }
+        emptyEl.classList.add('d-none');
+        tableWrap.classList.remove('d-none');
+        tbody.innerHTML = data.deals.map((deal) => {
+            const idCell = deal.bitrix_url
+                ? bitrixLink(deal.bitrix_url, deal.deal_id)
+                : fmtDealCell(deal.deal_id);
+            const titleCell = deal.bitrix_url
+                ? bitrixLink(deal.bitrix_url, deal.title || deal.deal_id)
+                : fmtDealCell(deal.title);
+            const dealRow = (
+                '<tr class="table-secondary">'
+                + `<td>${bitrixLink(deal.bitrix_url, 'Открыть')}</td>`
+                + `<td>${idCell}</td>`
+                + `<td>${titleCell}</td>`
+                + `<td>${fmtDealCell(deal.stage_name || deal.stage_id)}</td>`
+                + `<td>${fmtDealCell(deal.created_time)}</td>`
+                + '</tr>'
+            );
+            const contactsHeader = (
+                '<tr class="table-light">'
+                + '<td colspan="5" class="p-0">'
+                + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
+                + '<thead><tr class="small text-muted">'
+                + '<th class="ps-4">ФИО</th><th>Должность</th><th>Описание</th><th>Телефон</th><th>Источник</th><th>Выгрузка</th>'
+                + '</tr></thead><tbody>'
+                + renderContactRows(deal.contacts, deal.deal_id)
+                + '</tbody></table></td></tr>'
+            );
+            return dealRow + renderCompanyBlock(deal.company, deal.deal_id) + contactsHeader;
+        }).join('');
+        tbody.querySelectorAll('.contact-export-cb').forEach((el) => {
+            el.addEventListener('change', (e) => {
+                onSelectionCheckboxChange(parseInt(e.target.dataset.dealId, 10));
+            });
+        });
+        const start = dealsState.offset + 1;
+        const end = dealsState.offset + data.deals.length;
+        pageInfo.textContent = `${start}–${end} из ${dealsState.total}`;
+        pager.classList.toggle('d-none', dealsState.total <= dealsState.limit);
+        document.getElementById('deals-prev').disabled = dealsState.offset <= 0;
+        document.getElementById('deals-next').disabled = dealsState.offset + dealsState.limit >= dealsState.total;
+    }
+    async function loadDealsPreview() {
+        if (dealsState.loading) return;
+        const f = parseFiltersFromUrl();
+        dealsState.offset = f.offset;
+        if (!hasActiveFilters(f)) {
+            showPreviewPlaceholder();
+            return;
+        }
+        document.getElementById('deals-placeholder').classList.add('d-none');
+        setDealsLoading(true);
+        try {
+            const categoryId = f.category_id != null ? f.category_id : DEFAULT_CATEGORY;
+            const params = new URLSearchParams({
+                entity_type: getEntityType(),
+                category_id: String(categoryId),
+                offset: String(f.offset),
+                page_size: String(dealsState.limit),
+            });
+            f.stage_ids.forEach((id) => params.append('stage_id', id));
+            f.region_ids.forEach((id) => params.append('region_id', String(id)));
+            if (f.date_from) params.set('date_from', f.date_from);
+            if (f.date_to) params.set('date_to', f.date_to);
+            const resp = await fetch('/api/tomoru/deals?' + params);
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({}));
+                renderDeals({
+                    available: false,
+                    total: 0,
+                    deals: [],
+                    note: err.detail || 'Не удалось загрузить список сделок',
+                });
+                return;
+            }
+            renderDeals(await resp.json());
+        } catch (_) {
+            renderDeals({
+                available: false,
+                total: 0,
+                deals: [],
+                note: 'Ошибка сети при загрузке сделок',
+            });
+        } finally {
+            setDealsLoading(false);
+        }
+    }
+    function resetStages(placeholder){
+        resetStageSelect();
+        if (placeholder) {
+            initStageTomSelect(placeholder);
+        }
+    }
+    async function loadCategories(preferredCategoryId){
+        resetStages();
+        categorySelect.innerHTML = '<option>Загрузка...</option>';
+        try {
+            const resp = await fetch('/api/categories');
+            if(!resp.ok) throw new Error('Не удалось получить воронки');
+            const cats = await resp.json();
+            categorySelect.innerHTML = '';
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '— выберите воронку —';
+            categorySelect.appendChild(emptyOpt);
+            cats.forEach(c => {
+                const o = document.createElement('option');
+                o.value = c.id;
+                o.textContent = c.name + ' (id ' + c.id + ')';
+                categorySelect.appendChild(o);
+            });
+            if (preferredCategoryId != null) {
+                if (!cats.some(c => c.id === preferredCategoryId)) {
+                    const o = document.createElement('option');
+                    o.value = preferredCategoryId;
+                    o.textContent = 'Коммерческое предложение (id ' + preferredCategoryId + ')';
+                    categorySelect.appendChild(o);
+                }
+                categorySelect.value = String(preferredCategoryId);
+                updateStageVisibility(true);
+                await loadStagesForDeal();
+            } else {
+                categorySelect.value = '';
+                updateStageVisibility(false);
+            }
+        } catch(e) {
+            categorySelect.innerHTML = '';
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '— выберите воронку —';
+            categorySelect.appendChild(emptyOpt);
+            setMessage('Не удалось загрузить воронки: ' + e.message, true);
+            updateStageVisibility(false);
+        }
+    }
+    async function loadStagesForDeal(){
+        const categoryId = categorySelect.value;
+        if(!categoryId){
+            resetStages();
+            initStageTomSelect();
+            return;
+        }
+        resetStages('Загрузка...');
+        try {
+            const resp = await fetch('/api/categories/' + encodeURIComponent(categoryId) + '/stages');
+            if(!resp.ok) throw new Error('HTTP ' + resp.status);
+            const stages = await resp.json();
+            resetStageSelect();
+            stages.forEach(s => {
+                const o = document.createElement('option');
+                o.value = s.id;
+                o.textContent = s.name + ' (' + s.id + ')';
+                stageSelect.appendChild(o);
+            });
+            initStageTomSelect();
+        } catch(e) {
+            resetStages();
+            initStageTomSelect();
+            setMessage('Не удалось загрузить стадии: ' + e.message, true);
+        }
+    }
+    categorySelect.addEventListener('change', async () => {
+        if (applyingFromUrl) return;
+        clearContactOverrides();
+        const categoryId = readCategoryFromForm();
+        updateStageVisibility(categoryId != null);
+        if (categoryId != null) {
+            await loadStagesForDeal();
+        } else {
+            resetStages();
+            initStageTomSelect();
+        }
+        onFilterChange({ offset: 0, stage_ids: [] });
+    });
+    document.getElementById('deals-prev').addEventListener('click', () => {
+        const f = parseFiltersFromUrl();
+        navigateFilters(Object.assign({}, f, {
+            offset: Math.max(0, f.offset - dealsState.limit),
+        }));
+    });
+    document.getElementById('deals-next').addEventListener('click', () => {
+        const f = parseFiltersFromUrl();
+        if (f.offset + dealsState.limit < dealsState.total) {
+            navigateFilters(Object.assign({}, f, {
+                offset: f.offset + dealsState.limit,
+            }));
+        }
+    });
+    window.addEventListener('popstate', () => {
+        clearContactOverrides();
+        navigateFilters(parseFiltersFromUrl(), { fromPopstate: true });
+    });
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        setMessage('');
+        const f = readFiltersFromForm();
+        if (f.category_id == null) {
+            setMessage('Выберите воронку', true);
+            return;
+        }
+        window.open(TOMORU_APP_URL, '_blank', 'noopener,noreferrer');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Формирование CSV…';
+        const regions = getSelectedRegions();
+        const payload = {
+            entity_type: 'deal',
+            category_id: f.category_id,
+            stage_ids: f.stage_ids,
+            date_from: f.date_from || null,
+            date_to: f.date_to || null,
+            region_ids: f.region_ids,
+            region_names: regions.map((r) => r.name).filter(Boolean),
+        };
+        const overrides = {};
+        manuallyChangedDeals.forEach((dealKey) => {
+            overrides[parseInt(dealKey, 10)] = getOverrideSelection(dealKey).slice();
+        });
+        if (Object.keys(overrides).length > 0) {
+            payload.contact_overrides = overrides;
+        }
+        try {
+            const resp = await fetch('/exports/tomoru/download', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            if(!resp.ok){
+                const contentType = resp.headers.get('Content-Type') || '';
+                if (contentType.includes('application/json')) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error(data.detail || ('HTTP ' + resp.status));
+                }
+                throw new Error(await resp.text() || ('HTTP ' + resp.status));
+            }
+            const blob = await resp.blob();
+            const filename = parseContentDispositionFilename(resp.headers.get('Content-Disposition'))
+                || 'tomoru_export.csv';
+            downloadBlob(blob, filename);
+            setMessage('CSV скачан', false);
+        } catch(err) {
+            setMessage(err.message, true);
+        } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = submitBtnDefaultText;
+        }
+    });
+    async function initPage() {
+        initDatePickers();
+        const initial = parseFiltersFromUrl();
+        await Promise.all([
+            loadCategories(initial.category_id),
+            loadRegions(),
+        ]);
+        await applyFiltersToForm(initial, { silent: true });
+        const normalized = buildUrlFromFilters(initial);
+        if (window.location.search !== normalized) {
+            history.replaceState(null, '', window.location.pathname + normalized);
+        }
+        maybeLoadDealsPreview();
+    }
+    initPage();
+})();
+</script>
+{% endblock %}

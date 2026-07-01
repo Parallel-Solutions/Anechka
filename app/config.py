@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     import_batch_size: int = Field(default=50, alias="IMPORT_BATCH_SIZE")
     import_overlap_minutes: int = Field(default=10, alias="IMPORT_OVERLAP_MINUTES")
     bitrix_metadata_prompt_version: str = Field(default="1", alias="BITRIX_METADATA_PROMPT_VERSION")
+    bitrix_import_schedule_enabled: bool = Field(default=True, alias="BITRIX_IMPORT_SCHEDULE_ENABLED")
+    bitrix_import_schedule_interval_minutes: int = Field(
+        default=60, alias="BITRIX_IMPORT_SCHEDULE_INTERVAL_MINUTES"
+    )
 
     # --- HTTP Basic Auth (empty password = disabled) ---
     basic_auth_username: str = Field(default="admin", alias="BASIC_AUTH_USERNAME")
@@ -95,6 +99,46 @@ class Settings(BaseSettings):
     ie_memory_generate_max: int = Field(default=20, alias="IE_MEMORY_GENERATE_MAX")
     ie_run_retention_days: int = Field(default=90, alias="IE_RUN_RETENTION_DAYS")
     ie_audit_retention_days: int = Field(default=365, alias="IE_AUDIT_RETENTION_DAYS")
+
+    # --- Call result import ---
+    call_result_max_file_bytes: int = Field(default=52_428_800, alias="CALL_RESULT_MAX_FILE_BYTES")
+    call_result_max_rows: int = Field(default=100_000, alias="CALL_RESULT_MAX_ROWS")
+    call_result_allowed_extensions: str = Field(default=".xlsx,.csv", alias="CALL_RESULT_ALLOWED_EXTENSIONS")
+    call_result_storage_subdir: str = Field(default="call_results", alias="CALL_RESULT_STORAGE_SUBDIR")
+    bitrix_service_user_id: int = Field(default=0, alias="BITRIX_SERVICE_USER_ID")
+    call_result_parser_version: str = Field(default="1", alias="CALL_RESULT_PARSER_VERSION")
+    call_result_planner_version: str = Field(default="2", alias="CALL_RESULT_PLANNER_VERSION")
+    call_result_prompt_version: str = Field(default="1", alias="CALL_RESULT_PROMPT_VERSION")
+    call_result_schema_version: str = Field(default="1", alias="CALL_RESULT_SCHEMA_VERSION")
+    call_result_classifier_version: str = Field(default="2", alias="CALL_RESULT_CLASSIFIER_VERSION")
+
+    # --- Call results Bitrix execution ---
+    call_results_bitrix_execution_enabled: bool = Field(
+        default=False, alias="CALL_RESULTS_BITRIX_EXECUTION_ENABLED"
+    )
+    bitrix_call_source_field_code: str = Field(default="", alias="BITRIX_CALL_SOURCE_FIELD_CODE")
+    bitrix_call_source_field_value: str = Field(default="", alias="BITRIX_CALL_SOURCE_FIELD_VALUE")
+    positive_activity_default_deadline: str = Field(default="24h", alias="POSITIVE_ACTIVITY_DEFAULT_DEADLINE")
+    call_results_timezone: str = Field(default="Europe/Moscow", alias="CALL_RESULTS_TIMEZONE")
+    call_results_max_execution_retries: int = Field(default=3, alias="CALL_RESULTS_MAX_EXECUTION_RETRIES")
+    contact_search_provider: str = Field(default="fake", alias="CONTACT_SEARCH_PROVIDER")
+    contact_search_auto_confirm_threshold: float = Field(
+        default=0.95, alias="CONTACT_SEARCH_AUTO_CONFIRM_THRESHOLD"
+    )
+
+    # --- Call result LLM ---
+    llm_call_results_enabled: bool = Field(default=True, alias="LLM_CALL_RESULTS_ENABLED")
+    llm_call_results_model: str = Field(default="", alias="LLM_CALL_RESULTS_MODEL")
+    llm_call_results_timeout_seconds: float = Field(default=30.0, alias="LLM_CALL_RESULTS_TIMEOUT_SECONDS")
+    llm_call_results_max_retries: int = Field(default=2, alias="LLM_CALL_RESULTS_MAX_RETRIES")
+    llm_call_results_confidence_threshold: float = Field(
+        default=0.80, alias="LLM_CALL_RESULTS_CONFIDENCE_THRESHOLD"
+    )
+    llm_call_results_max_input_chars: int = Field(default=12000, alias="LLM_CALL_RESULTS_MAX_INPUT_CHARS")
+    llm_call_results_concurrency: int = Field(default=3, alias="LLM_CALL_RESULTS_CONCURRENCY")
+    llm_call_results_cache_enabled: bool = Field(default=True, alias="LLM_CALL_RESULTS_CACHE_ENABLED")
+    llm_call_results_use_mock: bool = Field(default=False, alias="LLM_CALL_RESULTS_USE_MOCK")
+    call_result_timezone_fallback: str = Field(default="Europe/Moscow", alias="CALL_RESULT_TIMEZONE_FALLBACK")
 
 
 def _env_overrides() -> dict[str, Any]:
@@ -138,6 +182,17 @@ def get_metadata_model(settings: Settings) -> str:
     return settings.openai_bitrix_metadata_model or settings.openai_model
 
 
+def get_call_results_model(settings: Settings) -> str:
+    return settings.llm_call_results_model or settings.openai_model
+
+
+def get_call_result_storage_dir(settings: Settings | None = None) -> Path:
+    s = settings or get_settings()
+    path = get_file_storage_dir(s) / s.call_result_storage_subdir
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
+
 def get_planner_model(settings: Settings) -> str:
     """Model used for export-plan generation.
 
@@ -168,6 +223,8 @@ def merge_db_settings(db_values: dict[str, str]) -> Settings:
     env = _env_overrides()
     merged = {**base, **env}
     for key, raw in db_values.items():
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            continue
         if key in ("connect_timeout", "read_timeout", "retry_base_delay"):
             merged[key] = float(raw)
         elif key in ("max_retries", "max_export_size"):

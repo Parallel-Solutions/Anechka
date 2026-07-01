@@ -122,6 +122,8 @@ class DashboardResponse(BaseModel):
     worker_active: bool
     last_sync_run: ImportResponse | None
     last_error: str | None
+    schedule_enabled: bool = False
+    schedule_interval_minutes: int = 60
 
 
 class MessageResponse(BaseModel):

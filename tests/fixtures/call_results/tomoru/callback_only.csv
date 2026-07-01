@@ -1,0 +1,2 @@
+phone_number,status_display,call_result_display,attempts,last_attempt_at,data:Вход,data:Вход в диалог 2,data:Выход на лпр,data:номер ЛПР,data:Перевод,data:Вопрос 1,data:Вопрос 2,data:ТЗ,data:Когда закупка,data:Когда перезвонить лпр
+78514262821,Completed,Interrupted,3,2026-06-11T11:36:26Z,,,,,,,,,,"{""match"": ""на той неделе в понедельник"", ""transcription"": ""Это только на той неделе говорю завтра уже выходные будут на той неделе в понедельник звоните если голова будет на месте""}"

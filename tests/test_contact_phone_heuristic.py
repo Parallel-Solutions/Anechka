@@ -170,10 +170,23 @@ class FixedLprClassifier:
 
 
 def test_is_deal_archived():
-    deal_open = CrmEntity(raw_payload={"closed": "N"})
+    deal_open = CrmEntity(raw_payload={"closed": "N"}, stage_id="C15:4")
     deal_closed = CrmEntity(raw_payload={"CLOSED": "Y"})
-    assert is_deal_archived(deal_open) is False
+    deal_archive = CrmEntity(raw_payload={"closed": "N"}, stage_id="C15:UC_8W3UAD")
+    archive_ids = frozenset({"C15:UC_8W3UAD"})
+    assert is_deal_archived(deal_open, archive_stage_ids=archive_ids) is False
     assert is_deal_archived(deal_closed) is True
+    assert is_deal_archived(deal_archive, archive_stage_ids=archive_ids) is True
+
+
+def test_filter_non_archived_deals():
+    from app.services.intelligent_export.contact_phone_heuristic import filter_non_archived_deals
+
+    warm = CrmEntity(stage_id="C15:4", raw_payload={"closed": "N"})
+    archived = CrmEntity(stage_id="C15:UC_8W3UAD", raw_payload={"closed": "N"})
+    archive_ids = frozenset({"C15:UC_8W3UAD"})
+    out = filter_non_archived_deals([warm, archived], archive_stage_ids=archive_ids)
+    assert [d.stage_id for d in out] == ["C15:4"]
 
 
 def test_detect_architect():

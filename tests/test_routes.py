@@ -32,7 +32,8 @@ def test_path_traversal_protection(tmp_path: Path):
 def test_home_page(client):
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "ie-app" in resp.text
+    assert 'id="tomoru-form"' in resp.text
+    assert "Выгрузка для Tomoru" in resp.text
 
 
 def test_legacy_export_page(client):
@@ -128,6 +129,218 @@ def test_category_full_invalid_category(client):
         )
     assert resp.status_code == 400
     assert "Категория" in resp.json()["detail"]
+
+
+def test_tomoru_export_creates_job(client):
+    with patch("app.routers.exports.job_service") as mock_svc:
+        mock_job = MagicMock()
+        mock_job.id = 77
+        mock_svc.create_job.return_value = mock_job
+        resp = client.post(
+            "/exports/tomoru",
+            json={
+                "entity_type": "deal",
+                "category_id": 15,
+                "stage_id": None,
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["job_id"] == 77
+    mock_svc.create_job.assert_called_once()
+    args = mock_svc.create_job.call_args[0]
+    assert args[1] == "region_lpr"
+    assert args[2]["entity_type"] == "deal"
+
+
+def test_tomoru_export_with_region_creates_job(client):
+    with patch("app.routers.exports.job_service") as mock_svc:
+        mock_job = MagicMock()
+        mock_job.id = 78
+        mock_svc.create_job.return_value = mock_job
+        resp = client.post(
+            "/exports/tomoru",
+            json={
+                "entity_type": "deal",
+                "category_id": 15,
+                "region_id": 1091,
+                "region_name": "Томская область",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["job_id"] == 78
+    args = mock_svc.create_job.call_args[0]
+    assert args[2]["region_id"] == 1091
+    assert args[2]["region_name"] == "Томская область"
+
+
+def test_tomoru_export_with_multiple_regions_creates_job(client):
+    with patch("app.routers.exports.job_service") as mock_svc:
+        mock_job = MagicMock()
+        mock_job.id = 79
+        mock_svc.create_job.return_value = mock_job
+        resp = client.post(
+            "/exports/tomoru",
+            json={
+                "entity_type": "deal",
+                "category_id": 15,
+                "region_ids": [1091, 1105],
+                "region_names": ["Томская область", "Москва"],
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["job_id"] == 79
+    args = mock_svc.create_job.call_args[0]
+    assert args[2]["region_ids"] == [1091, 1105]
+    assert args[2]["region_names"] == ["Томская область", "Москва"]
+
+
+def test_tomoru_export_backward_compat_singular_stage(client):
+    with patch("app.routers.exports.job_service") as mock_svc, patch(
+        "app.routers.exports.BitrixClient"
+    ) as mock_cls:
+        mock_cls.return_value.get_stages.return_value = [{"id": "C15:NEW", "name": "New"}]
+        mock_job = MagicMock()
+        mock_job.id = 80
+        mock_svc.create_job.return_value = mock_job
+        resp = client.post(
+            "/exports/tomoru",
+            json={
+                "entity_type": "deal",
+                "category_id": 15,
+                "stage_id": "C15:NEW",
+            },
+        )
+    assert resp.status_code == 200
+    args = mock_svc.create_job.call_args[0]
+    assert args[2]["stage_ids"] == ["C15:NEW"]
+
+
+def test_tomoru_export_accepts_contact_overrides_list(client):
+    with patch("app.routers.exports.job_service") as mock_svc:
+        mock_job = MagicMock()
+        mock_job.id = 81
+        mock_svc.create_job.return_value = mock_job
+        resp = client.post(
+            "/exports/tomoru",
+            json={
+                "entity_type": "deal",
+                "category_id": 15,
+                "contact_overrides": {"4002": [411, 412, 0]},
+            },
+        )
+    assert resp.status_code == 200
+    args = mock_svc.create_job.call_args[0]
+    assert args[2]["contact_overrides"] == {"4002": [411, 412, 0]}
+
+
+def test_tomoru_save_contact_selection_endpoint(client):
+    resp = client.put(
+        "/api/tomoru/deals/9001/contact-selection",
+        json={"contact_ids": [411, 412, 0]},
+    )
+    assert resp.status_code == 204
+
+
+def test_tomoru_download_returns_csv(client, tmp_path):
+    csv_file = tmp_path / "lpr_tomoru_test.csv"
+    csv_file.write_text("phone_number\n79161234567\n", encoding="utf-8-sig")
+
+    with (
+        patch("app.routers.exports.LprTomoruService") as mock_cls,
+        patch("app.routers.exports.get_export_dir", return_value=tmp_path),
+        patch("app.routers.exports.load_lpr_config"),
+        patch("app.routers.exports.resolve_portal_id", return_value="test.portal"),
+    ):
+        mock_instance = mock_cls.return_value
+        mock_instance.run_lpr_tomoru_export.return_value = str(csv_file)
+        mock_instance.last_matched_total = 6000
+        resp = client.post(
+            "/exports/tomoru/download",
+            json={"entity_type": "deal", "category_id": 15},
+        )
+
+    assert resp.status_code == 200
+    assert "text/csv" in resp.headers["content-type"]
+    assert resp.headers["x-export-matched-total"] == "6000"
+    assert "x-export-truncated" not in resp.headers
+    assert b"phone_number" in resp.content
+    assert b"79161234567" in resp.content
+    mock_cls.return_value.run_lpr_tomoru_export.assert_called_once()
+
+
+def test_tomoru_deals_preview_calls_service(client):
+    with patch(
+        "app.routers.exports.ExportDealsService.list_tomoru_deals",
+        return_value=MagicMock(
+            total=0,
+            deals=[],
+            available=True,
+            source="filter",
+            offset=0,
+            limit=50,
+            note=None,
+            matched_total=0,
+            truncated=False,
+        ),
+    ) as mock_list:
+        resp = client.get("/api/tomoru/deals?category_id=15&stage_id=C15:NEW")
+    assert resp.status_code == 200
+    mock_list.assert_called_once()
+    assert "export_limit" not in mock_list.call_args.kwargs
+
+
+def test_tomoru_download_validation_error(client):
+    from app.exceptions import ExportValidationError
+
+    with (
+        patch("app.routers.exports.LprTomoruService") as mock_cls,
+        patch("app.routers.exports.load_lpr_config"),
+        patch("app.routers.exports.resolve_portal_id", return_value="test.portal"),
+    ):
+        mock_cls.return_value.run_lpr_tomoru_export.side_effect = ExportValidationError(
+            "По указанным фильтрам сделки не найдены в локальной БД"
+        )
+        resp = client.post(
+            "/exports/tomoru/download",
+            json={"entity_type": "deal", "category_id": 15},
+        )
+
+    assert resp.status_code == 400
+    assert "сделки не найдены" in resp.json()["detail"]
+
+
+def test_list_regions_returns_sorted(client):
+    with patch("app.routers.bitrix.BitrixClient") as mock_cls:
+        mock_cls.return_value.list_regions.return_value = [
+            {"id": 1105, "name": "Москва"},
+            {"id": 1091, "name": "Томская область"},
+        ]
+        resp = client.get("/api/regions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == [
+        {"id": 1105, "name": "Москва"},
+        {"id": 1091, "name": "Томская область"},
+    ]
+
+
+def test_list_regions_empty_without_webhook(client):
+    with patch("app.routers.bitrix.get_app_settings") as mock_settings:
+        mock_settings.return_value = MagicMock(bitrix_webhook_url="")
+        resp = client.get("/api/regions")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_tomoru_export_page_has_deals_preview(client):
+    resp = client.get("/tomoru-export")
+    assert resp.status_code == 200
+    assert 'id="deals-preview-card"' in resp.text
+    assert 'class="col-md-6 d-none" id="region-wrap"' not in resp.text
+    assert "tom-select" in resp.text.lower()
+    assert "/exports/tomoru/download" in resp.text
+    assert "app.tomoru.ru/org/parallelnye-resheniya" in resp.text
+    assert "window.location.href = '/exports/'" not in resp.text
 
 
 def test_cancel_job(client, db_session):

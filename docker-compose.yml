@@ -5,6 +5,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-bitrix}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bitrix}
       POSTGRES_DB: ${POSTGRES_DB:-bitrix_export}
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -56,6 +58,7 @@ services:
     volumes:
       - ./exports:/app/exports
       - ./logs:/app/logs
+      - ./database.sql:/app/database.sql
       - filestorage:/app/filestorage
     depends_on:
       db:

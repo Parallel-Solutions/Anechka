@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from app.config import Settings, get_planner_model
-from app.services.lpr_service import LprConfig, detect_lpr
+from app.services.lpr_service import LprConfig, lpr_keyword_rank
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +46,20 @@ class KeywordLprClassifier(ContactLprClassifier):
         self.config = config
 
     def pick_lpr(self, candidates: list[ContactProfile], *, deal_title: str = "") -> LprPickResult:
+        best: ContactProfile | None = None
+        best_rank: int | None = None
+        best_reason = ""
         for cand in candidates:
             payload = cand.to_classifier_dict()
-            is_lpr, reason = detect_lpr(payload, self.config)
-            if is_lpr:
-                return LprPickResult(contact_id=cand.contact_id, reason=reason or "keyword LPR")
+            rank, reason = lpr_keyword_rank(payload, self.config)
+            if rank is None:
+                continue
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best = cand
+                best_reason = reason or "keyword LPR"
+        if best is not None:
+            return LprPickResult(contact_id=best.contact_id, reason=best_reason)
         return LprPickResult(contact_id=None, reason="")
 
 

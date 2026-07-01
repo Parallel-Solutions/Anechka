@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Импорт #{{ import_id }} — результаты прозвона{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-start mb-3">
+    <div>
+        <h1 class="h3 mb-1">Подготовка данных для Битрикс24</h1>
+        <p class="text-muted mb-0"><span id="import-meta">{{ import_rec.original_filename }}</span> · статус: <span id="import-status">{{ import_rec.status }}</span></p>
+    </div>
+    <a href="/call-results" class="btn btn-outline-secondary btn-sm">К списку</a>
+</div>
+
+<div id="import-alert"></div>
+<div id="summary-cards" class="row g-3 mb-4"></div>
+
+<div id="queue-tabs-block" class="d-none mb-4">
+    <ul class="nav nav-tabs" role="tablist">
+        <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-retry" type="button">Повторные звонки</button></li>
+        <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-search" type="button">Поиск контакта</button></li>
+    </ul>
+    <div class="tab-content border border-top-0 p-3">
+        <div class="tab-pane fade show active" id="tab-retry"><div id="retry-queue-content"></div></div>
+        <div class="tab-pane fade" id="tab-search"><div id="contact-search-content"></div></div>
+    </div>
+</div>
+<div id="hangup-without-answers-block" class="d-none mb-4"></div>
+<div id="rows-table-block" class="d-none mb-4"></div>
+<div id="attempt-history-block" class="d-none"></div>
+<div id="method-blocks"></div>
+
+<div class="modal fade" id="row-editor-modal" tabindex="-1" aria-labelledby="row-editor-title" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="row-editor-title">Редактор строки</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="row-editor-id">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Телефон</label>
+                        <input type="text" class="form-control form-control-sm" id="row-editor-phone" readonly>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Перезвон (callback_at)</label>
+                        <input type="datetime-local" class="form-control form-control-sm" id="row-editor-callback">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Summary</label>
+                        <textarea class="form-control form-control-sm" id="row-editor-summary" rows="2"></textarea>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Контакт (имя)</label>
+                        <input type="text" class="form-control form-control-sm" id="row-editor-contact-name">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Альт. телефон</label>
+                        <input type="text" class="form-control form-control-sm" id="row-editor-full-phone">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Email</label>
+                        <input type="email" class="form-control form-control-sm" id="row-editor-email">
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Добавочный</label>
+                        <input type="text" class="form-control form-control-sm" id="row-editor-extension">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label">Сделка (local id)</label>
+                        <select class="form-select form-select-sm" id="row-editor-deal"><option value="">— не менять —</option></select>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label d-block">Сигналы</label>
+                        <div class="d-flex flex-wrap gap-3">
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-positive" data-signal="positive"><label class="form-check-label" for="sig-positive">Положительный</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-alternate" data-signal="alternate_contact_requested"><label class="form-check-label" for="sig-alternate">Другой контакт</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-callback" data-signal="callback_later_requested"><label class="form-check-label" for="sig-callback">Перезвон</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-no-answer" data-signal="no_answer"><label class="form-check-label" for="sig-no-answer">Не дозвонились</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-deal-not-found" data-signal="deal_not_found"><label class="form-check-label" for="sig-deal-not-found">Сделка не найдена</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-refusal" data-signal="explicit_refusal"><label class="form-check-label" for="sig-refusal">Отказ</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-hangup" data-signal="hangup_without_result"><label class="form-check-label" for="sig-hangup">Hangup</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-replacement" data-signal="replacement_contact_required"><label class="form-check-label" for="sig-replacement">Перезвон на другой номер</label></div>
+                            <div class="form-check"><input class="form-check-input row-signal" type="checkbox" id="sig-manual" data-signal="needs_manual_review"><label class="form-check-label" for="sig-manual">Ручная проверка</label></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Отмена</button>
+                <button type="button" class="btn btn-primary btn-sm" id="row-editor-save">Сохранить и пересобрать</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="row-raw-modal" tabindex="-1" aria-labelledby="row-raw-title" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="row-raw-title">Оригинальная запись</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <div id="row-raw-body"></div>
+                <button class="btn btn-link btn-sm p-0 mt-2" type="button" data-bs-toggle="collapse" data-bs-target="#row-raw-json">Показать JSON</button>
+                <div class="collapse mt-2" id="row-raw-json"><pre class="small mb-0" id="row-raw-json-pre"></pre></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="row-llm-modal" tabindex="-1" aria-labelledby="row-llm-title" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="row-llm-title">ИИ — запрос и ответ</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button>
+            </div>
+            <div class="modal-body">
+                <div id="row-llm-loading" class="text-center py-4 d-none">
+                    <div class="spinner-border spinner-border-sm" role="status"></div>
+                    <span class="ms-2 text-muted">Загрузка…</span>
+                </div>
+                <div id="row-llm-content" class="d-none">
+                    <div id="row-llm-alerts"></div>
+                    <div id="row-llm-meta" class="small text-muted mb-3"></div>
+                    <h6 class="fw-semibold">Запрос</h6>
+                    <p class="small text-muted mb-1">Системный промпт</p>
+                    <pre class="small bg-light border rounded p-2 mb-3" id="row-llm-system" style="max-height:200px;overflow:auto;white-space:pre-wrap;"></pre>
+                    <p class="small text-muted mb-1">Данные (user message)</p>
+                    <pre class="small bg-light border rounded p-2 mb-3" id="row-llm-user" style="max-height:300px;overflow:auto;"></pre>
+                    <h6 class="fw-semibold">Ответ</h6>
+                    <pre class="small bg-light border rounded p-2 mb-0" id="row-llm-response" style="max-height:300px;overflow:auto;"></pre>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="mt-4 d-flex flex-wrap gap-2">
+    <a class="btn btn-outline-primary" href="/api/call-results/imports/{{ import_id }}/export.json" target="_blank">JSON</a>
+    <a class="btn btn-outline-primary" href="/api/call-results/imports/{{ import_id }}/export.xlsx">XLSX</a>
+    <a class="btn btn-outline-primary" href="/api/call-results/imports/{{ import_id }}/export.csv">CSV</a>
+    <button class="btn btn-outline-warning" id="btn-restart">Запустить заново</button>
+    <button class="btn btn-outline-secondary" id="btn-rebuild">Пересобрать операции</button>
+    <button class="btn btn-outline-secondary" id="btn-retry-llm" title="Классифицировать строки с расшифровкой через OpenAI">Прогнать через ИИ</button>
+    <button class="btn btn-outline-danger" id="btn-delete-import">Удалить импорт</button>
+    <button class="btn btn-success" id="btn-execute" title="Требует CALL_RESULTS_BITRIX_EXECUTION_ENABLED=true">Выполнить выбранные действия в Битрикс24</button>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+window.CALL_RESULT_IMPORT_ID = {{ import_id }};
+</script>
+<script src="/static/js/call_results.js?v=20250630k"></script>
+<script>initCallResultImportPage({{ import_id }});</script>
+{% endblock %}

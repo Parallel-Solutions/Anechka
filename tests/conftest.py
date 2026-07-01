@@ -56,6 +56,9 @@ def _disable_basic_auth_for_tests():
 
 @pytest.fixture()
 def db_session():
+    from app.services.call_results.matcher import invalidate_matcher_cache
+
+    invalidate_matcher_cache()
     Base.metadata.create_all(bind=database_module.engine)
     session = database_module.SessionLocal()
     try:
@@ -63,6 +66,7 @@ def db_session():
     finally:
         session.close()
         Base.metadata.drop_all(bind=database_module.engine)
+        invalidate_matcher_cache()
 
 
 @pytest.fixture()

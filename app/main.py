@@ -9,12 +9,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import func, select
+from sqlalchemy.exc import ProgrammingError
 
 from app.config import BASE_DIR, get_export_dir, get_settings
 from app.database import SessionLocal, engine
 from app.dependencies import get_app_settings
 from app.logging_config import setup_logging
-from app.routers import admin_bitrix, ai, bitrix, exports, intelligent_export, pages, settings
+from app.routers import admin_bitrix, ai, bitrix, call_results, exports, intelligent_export, pages, settings
 from app.services.job_service import JobService
 from app.services.ai_prompt_service import AiPromptService
 
@@ -57,6 +58,17 @@ def _log_startup_diagnostics(db, app_settings) -> None:
                 portal_id,
                 target,
             )
+        try:
+            from app.models.call_results import CallResultImport
+
+            db.scalar(select(func.count()).select_from(CallResultImport))
+        except ProgrammingError:
+            db.rollback()
+            logger.warning(
+                "Startup DB check: call_result_imports table missing at %s — "
+                "/call-results will return 500. Run: docker compose run --rm migrate alembic upgrade head",
+                target,
+            )
     except Exception:
         logger.exception("Startup DB check failed for %s", target)
 
@@ -85,6 +97,8 @@ async def lifespan(app: FastAPI):
         db.close()
     yield
     JobService.shutdown()
+    from app.services.call_results.job_service import CallResultJobService
+    CallResultJobService.shutdown()
 
 
 app = FastAPI(
@@ -104,6 +118,7 @@ app.include_router(exports.router)
 app.include_router(ai.router)
 app.include_router(admin_bitrix.router)
 app.include_router(intelligent_export.router)
+app.include_router(call_results.router)
 
 
 @app.get("/health")

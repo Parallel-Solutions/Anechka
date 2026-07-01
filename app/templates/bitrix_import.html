@@ -83,6 +83,14 @@
             <dt class="col-sm-4">Удалённые</dt><dd class="col-sm-8">{{ dashboard.deleted_count }}</dd>
             <dt class="col-sm-4">Справочники</dt><dd class="col-sm-8">{{ dashboard.dictionaries_count }}</dd>
             <dt class="col-sm-4">Поля на проверку</dt><dd class="col-sm-8">{{ dashboard.fields_needing_review }}</dd>
+            <dt class="col-sm-4">Автоимпорт</dt>
+            <dd class="col-sm-8">
+                {% if dashboard.schedule_enabled %}
+                    каждые {{ dashboard.schedule_interval_minutes }} мин (включён)
+                {% else %}
+                    выключен
+                {% endif %}
+            </dd>
         </dl>
     </div>
 </div>

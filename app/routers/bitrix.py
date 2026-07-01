@@ -41,11 +41,37 @@ def list_stages(category_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=502, detail=exc.user_message) from exc
 
 
+@router.get("/lead-statuses", response_model=list[StageItem])
+def list_lead_statuses(db: Session = Depends(get_db)):
+    try:
+        statuses = _client(db).get_lead_statuses()
+        return [
+            StageItem(id=s["id"], name=s["name"], category_id=0) for s in statuses
+        ]
+    except AppError as exc:
+        raise HTTPException(status_code=502, detail=exc.user_message) from exc
+
+
 @router.get("/users", response_model=list[UserItem])
 def list_users(db: Session = Depends(get_db)):
     try:
         users = _client(db).get_users()
         return [UserItem(id=u["id"], name=u["name"]) for u in users]
+    except AppError as exc:
+        raise HTTPException(status_code=502, detail=exc.user_message) from exc
+
+
+@router.get("/regions", response_model=list[RegionSearchResult])
+def list_regions(
+    iblock_id: int = Query(default=49),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    if not settings.bitrix_webhook_url:
+        return []
+    try:
+        regions = BitrixClient(settings).list_regions(iblock_id)
+        return [RegionSearchResult(id=r["id"], name=r["name"]) for r in regions]
     except AppError as exc:
         raise HTTPException(status_code=502, detail=exc.user_message) from exc
 

@@ -20,7 +20,7 @@ from app.services.intelligent_export.contact_lpr_classifier import (
     ContactLprClassifier,
     build_lpr_classifier,
 )
-from app.services.lpr_service import DEFAULT_LPR_STOPWORDS, LprConfig
+from app.services.lpr_service import DEFAULT_LPR_STOPWORDS, LprConfig, contact_to_lpr_dict
 from app.services.phone_service import normalize_phone
 
 logger = logging.getLogger(__name__)
@@ -89,16 +89,17 @@ class ContactCandidate:
             email = first.get("VALUE") or first.get("value") or str(first) if isinstance(first, dict) else str(first)
         elif emails:
             email = str(emails)
-        return {
-            "contact_id": self.contact_id,
-            "full_name": self.contact.full_name or "",
-            "post": self.contact.post or "",
-            "post_custom": self.contact.post_custom or "",
-            "company": self.contact.company_title or "",
-            "comments": str(payload_lookup(raw, "COMMENTS") or ""),
-            "email": email,
-            "source": self.source,
-        }
+        payload = contact_to_lpr_dict(self.contact)
+        payload.update(
+            {
+                "contact_id": self.contact_id,
+                "full_name": self.contact.full_name or "",
+                "company": self.contact.company_title or "",
+                "email": email,
+                "source": self.source,
+            }
+        )
+        return payload
 
     def sort_key(self) -> tuple[float, float]:
         raw = self.contact.raw_payload or {}
@@ -159,13 +160,32 @@ def is_deal_in_category(
     return stage in legacy
 
 
-def is_deal_archived(deal: CrmEntity) -> bool:
+def is_deal_archived(
+    deal: CrmEntity,
+    *,
+    archive_stage_ids: frozenset[str] | None = None,
+) -> bool:
     raw = deal.raw_payload or {}
     for key in ("closed", "CLOSED"):
         val = raw.get(key)
         if val is not None and str(val).upper() == "Y":
             return True
+    stage = (deal.stage_id or "").strip()
+    if not stage:
+        stage = str(raw.get("stageId") or raw.get("STAGE_ID") or "").strip()
+    if archive_stage_ids and stage in archive_stage_ids:
+        return True
     return False
+
+
+def filter_non_archived_deals(
+    deals: list[CrmEntity],
+    *,
+    archive_stage_ids: frozenset[str] | None = None,
+) -> list[CrmEntity]:
+    if not archive_stage_ids:
+        return deals
+    return [d for d in deals if not is_deal_archived(d, archive_stage_ids=archive_stage_ids)]
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -420,6 +440,7 @@ def build_tomoru_phone_rows(
 ) -> tuple[list[dict[str, Any]], TomoruBuildStats]:
     """Build output rows ``[{phone: '7...'}]`` from fetched deal entity rows."""
     from app.services.intelligent_export.kp_legacy_stages import legacy_kp_stage_ids
+    from app.services.intelligent_export.tomoru_stages import resolve_archive_stage_ids
 
     _log = log or (lambda _m: None)
     stats = TomoruBuildStats(deals_total=len(deal_rows))
@@ -431,6 +452,11 @@ def build_tomoru_phone_rows(
             from app.services.bitrix_client import BitrixClient
 
             bitrix_client = BitrixClient(settings)
+    archive_stages = (
+        resolve_archive_stage_ids(db, portal_id, post_process.category_id, client=bitrix_client)
+        if post_process.exclude_archived
+        else frozenset()
+    )
     seen_phones: set[str] = set()
     out: list[dict[str, Any]] = []
     alias = post_process.deal_alias
@@ -439,7 +465,7 @@ def build_tomoru_phone_rows(
         deal = row.get(alias)
         if not isinstance(deal, CrmEntity):
             continue
-        if post_process.exclude_archived and is_deal_archived(deal):
+        if post_process.exclude_archived and is_deal_archived(deal, archive_stage_ids=archive_stages):
             stats.deals_skipped_archived += 1
             continue
         if not is_deal_in_category(deal, post_process.category_id, legacy_stage_ids=legacy_stages):

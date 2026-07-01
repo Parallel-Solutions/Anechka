@@ -41,7 +41,12 @@ def test_intelligent_export_css_layout(client):
     assert "flex-direction: row" in resp.text
 
 
-def test_nav_has_intelligent_export_link(client):
+def test_nav_hides_intelligent_export_link(client):
     resp = client.get("/")
-    assert "Умные выгрузки" in resp.text
-    assert 'href="/"' in resp.text
+    assert resp.status_code == 200
+    assert "Умные выгрузки" not in resp.text
+    assert 'href="/tomoru-export"' in resp.text
+
+    ie_resp = client.get("/intelligent-export")
+    assert ie_resp.status_code == 200
+    assert "ie-app" in ie_resp.text

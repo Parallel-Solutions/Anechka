@@ -406,6 +406,24 @@ def _dictionary_stages(db: Session, portal_id: str, dictionary_code: str) -> lis
     ]
 
 
+def build_stage_names_map(
+    db: Session,
+    portal_id: str,
+    *,
+    category_id: int | None = None,
+) -> dict[str, str]:
+    """Map STAGE_ID → display name from imported CRM dictionaries."""
+    if category_id is not None:
+        stages = _load_stages_from_db(db, portal_id, category_id)
+    else:
+        stages = _load_all_stages_from_db(db, portal_id)
+    return {
+        str(stage["id"]): str(stage.get("name") or stage["id"])
+        for stage in stages
+        if stage.get("id")
+    }
+
+
 def _load_all_stages_from_bitrix(client: Any) -> list[dict[str, Any]]:
     stages: list[dict[str, Any]] = []
     for category in client.get_categories():
@@ -420,3 +438,36 @@ def _load_stages_from_bitrix(client: Any, category_id: int) -> list[dict[str, An
         for stage in client.get_stages(category_id)
         if stage.get("id")
     ]
+
+
+def archive_stage_ids_from_stages(stages: list[dict[str, Any]]) -> frozenset[str]:
+    """Return STATUS_ID values whose display name indicates archive."""
+    out: set[str] = set()
+    for stage in stages:
+        name = normalize_stage_name(str(stage.get("name") or ""))
+        if "архив" not in name:
+            continue
+        stage_id = str(stage.get("id") or "").strip()
+        if stage_id:
+            out.add(stage_id)
+    return frozenset(out)
+
+
+def resolve_archive_stage_ids(
+    db: Session,
+    portal_id: str,
+    category_id: int,
+    *,
+    client: Any | None = None,
+) -> frozenset[str]:
+    stages = _load_stages_from_db(db, portal_id, category_id)
+    if not stages and client is not None:
+        try:
+            stages = _load_stages_from_bitrix(client, category_id)
+        except Exception:
+            logger.warning(
+                "Failed to load funnel %s stages from Bitrix for archive filter",
+                category_id,
+                exc_info=True,
+            )
+    return archive_stage_ids_from_stages(stages)

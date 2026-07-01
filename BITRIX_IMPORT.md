@@ -62,6 +62,20 @@ IMPORT_BATCH_SIZE=50
 IMPORT_OVERLAP_MINUTES=10
 ```
 
+## Автоимпорт
+
+Worker автоматически ставит инкрементальный импорт в очередь по расписанию (с fallback на full при отсутствии checkpoint).
+
+```env
+BITRIX_IMPORT_SCHEDULE_ENABLED=true
+BITRIX_IMPORT_SCHEDULE_INTERVAL_MINUTES=60
+```
+
+- Интервал отсчитывается от последнего успешного `incremental` или `full`
+- При активном run (`pending`/`running`) новый не создаётся
+- Запуски помечаются `requested_by=scheduler`, с AI-анализом (`analyze_metadata=true`)
+- Отключение: `BITRIX_IMPORT_SCHEDULE_ENABLED=false`
+
 ## Команды
 
 Все команды выполняются из каталога `bitrix_export_web` при запущенном стеке (`docker compose up --build`), если не указано иное.
@@ -131,9 +145,15 @@ docker compose exec web python scripts/clear_crm_import_data.py
 ## Резервное копирование
 
 ```bash
-# PostgreSQL
-docker compose exec db pg_dump -U bitrix bitrix_export > backup.sql
+# PostgreSQL (UTF-8, безопасно на Windows — pg_dump внутри контейнера)
+docker compose exec web python scripts/dump_db.py --output /app/database.sql
+
+# Альтернатива: произвольный файл в смонтированном каталоге exports/
+docker compose exec web python scripts/dump_db.py --output /app/exports/backup.sql
 
 # Файлы
 tar -czf filestorage_backup.tar.gz filestorage/
 ```
+
+> Не используйте `docker compose exec db pg_dump ... > backup.sql` в PowerShell/cmd: перенаправление
+> stdout часто перекодирует UTF-8 и портит русский текст в дампе.

@@ -19,6 +19,8 @@ from app.repositories.crm_repository import CrmRepository
 from app.repositories.sync_repository import SyncRepository
 from app.schemas_bitrix import DashboardResponse
 from app.services.bitrix_client import BitrixClient
+from app.services.intelligent_export.staleness import compute_sync_state
+from app.services.lpr_service import load_lpr_config
 from app.services.security_service import format_local_dt, mask_secret, mask_webhook
 from app.utils.portal import portal_id_from_webhook
 
@@ -36,14 +38,48 @@ def _intelligent_export_page(request: Request):
     return templates.TemplateResponse(request, "intelligent_export.html", {})
 
 
-@router.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    return _intelligent_export_page(request)
-
-
 @router.get("/intelligent-export", response_class=HTMLResponse)
 def intelligent_export_page(request: Request):
     return _intelligent_export_page(request)
+
+
+def _tomoru_export_page(request: Request, db: Session):
+    settings = get_app_settings(db)
+    jobs = (
+        db.query(ExportJob)
+        .filter(ExportJob.mode == "region_lpr")
+        .order_by(ExportJob.created_at.desc())
+        .limit(20)
+        .all()
+    )
+    bitrix_ok = False
+    if settings.bitrix_webhook_url:
+        try:
+            bitrix_ok = BitrixClient(settings).test_connection()
+        except Exception:
+            bitrix_ok = False
+    portal = portal_id_from_webhook(settings.bitrix_webhook_url)
+    sync_state = compute_sync_state(db, portal, settings)
+    return templates.TemplateResponse(
+        request,
+        "tomoru_export.html",
+        {
+            "jobs": jobs,
+            "bitrix_connected": bitrix_ok,
+            "format_dt": format_local_dt,
+            "sync_state": sync_state.to_dict(),
+        },
+    )
+
+
+@router.get("/", response_class=HTMLResponse)
+def home(request: Request, db: Session = Depends(get_db)):
+    return _tomoru_export_page(request, db)
+
+
+@router.get("/tomoru-export", response_class=HTMLResponse)
+def tomoru_export_page(request: Request, db: Session = Depends(get_db)):
+    return _tomoru_export_page(request, db)
 
 
 @router.get("/legacy-export", response_class=HTMLResponse)
@@ -72,6 +108,7 @@ def legacy_export_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db)):
     settings = get_app_settings(db)
+    lpr_config = load_lpr_config(db)
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -80,6 +117,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             "webhook_masked": mask_webhook(settings.bitrix_webhook_url),
             "openai_key_masked": mask_secret(settings.openai_api_key),
             "env_webhook_set": "bitrix_webhook_url" in _env_overrides(),
+            "lpr_config": lpr_config,
         },
     )
 
@@ -143,6 +181,8 @@ def bitrix_import_dashboard(request: Request, db: Session = Depends(get_db)):
         worker_active=sync_repo.has_active_run(portal),
         last_sync_run=None,
         last_error=last_run.last_error if last_run else None,
+        schedule_enabled=settings.bitrix_import_schedule_enabled,
+        schedule_interval_minutes=settings.bitrix_import_schedule_interval_minutes,
     )
     return templates.TemplateResponse(
         request,
@@ -328,6 +368,10 @@ def export_detail(request: Request, job_id: int, db: Session = Depends(get_db)):
     job = db.query(ExportJob).filter(ExportJob.id == job_id).first()
     event_log = json.loads(job.event_log_json) if job else []
     statistics = json.loads(job.statistics_json) if job else {}
+    parameters: dict = {}
+    if job and job.parameters_json:
+        parameters = json.loads(job.parameters_json)
+        parameters.pop("_mode", None)
     return templates.TemplateResponse(
         request,
         "export_detail.html",
@@ -335,7 +379,41 @@ def export_detail(request: Request, job_id: int, db: Session = Depends(get_db)):
             "job": job,
             "event_log": event_log,
             "statistics": statistics,
+            "parameters": parameters,
             "format_dt": format_local_dt,
             "has_json_download": _has_json_download(job),
         },
+    )
+
+
+@router.get("/call-results", response_class=HTMLResponse)
+def call_results_page(request: Request, db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    from app.repositories.call_result_repository import CallResultRepository
+    from app.services.auth_service import resolve_portal_id
+
+    portal_id = resolve_portal_id(settings)
+    imports = CallResultRepository(db, portal_id).list_imports(limit=15)
+    return templates.TemplateResponse(
+        request,
+        "call_results.html",
+        {"imports": imports, "format_dt": format_local_dt},
+    )
+
+
+@router.get("/call-results/imports/{import_id}", response_class=HTMLResponse)
+def call_result_import_page(import_id: int, request: Request, db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    from app.repositories.call_result_repository import CallResultRepository
+    from app.services.auth_service import resolve_portal_id
+
+    portal_id = resolve_portal_id(settings)
+    imp = CallResultRepository(db, portal_id).get_import(import_id)
+    if imp is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Import not found")
+    return templates.TemplateResponse(
+        request,
+        "call_result_import.html",
+        {"import_id": import_id, "import_rec": imp, "format_dt": format_local_dt},
     )

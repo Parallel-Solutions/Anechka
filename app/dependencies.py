@@ -60,3 +60,18 @@ def require_role(minimum: str):
 
 def get_ie_user(auth: AuthService = Depends(get_auth_service)) -> AppUser:
     return auth.get_default_ie_user()
+
+
+def get_call_result_classifier_instance(settings: Settings):
+    from app.services.call_results.fake_classifier import FakeCallResultClassifier
+    from app.services.call_results.llm_gateway import DisabledCallResultClassifier, OpenAICallResultClassifier
+
+    if settings.llm_call_results_use_mock:
+        return FakeCallResultClassifier()
+    if not settings.llm_call_results_enabled:
+        return DisabledCallResultClassifier()
+    return OpenAICallResultClassifier(settings)
+
+
+def get_call_result_classifier(settings: Settings = Depends(get_settings_dep)):
+    return get_call_result_classifier_instance(settings)

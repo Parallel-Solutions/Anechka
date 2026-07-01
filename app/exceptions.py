@@ -10,6 +10,8 @@ class AppError(Exception):
         super().__init__(message or user_message or self.user_message)
         if user_message:
             self.user_message = user_message
+        elif message:
+            self.user_message = message
 
 
 class BitrixAPIError(AppError):

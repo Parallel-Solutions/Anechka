@@ -1,0 +1,2 @@
+phone_number,status_display,call_result_display,attempts,last_attempt_at,data:Вход,data:Вход в диалог 2,data:Выход на лпр,data:номер ЛПР,data:Перевод,data:Вопрос 1,data:Вопрос 2,data:ТЗ,data:Когда закупка,data:Когда перезвонить лпр
+73436053004,Completed,Do Not Call,1,2026-06-15T13:06:50Z,"{""match"": ""не звоните"", ""transcription"": ""Не звоните больше, мы не заинтересованы""}",,,,,,,,,

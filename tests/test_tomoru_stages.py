@@ -12,6 +12,7 @@ from app.services.export_plan.validator import ExportScope
 from app.services.intelligent_export.plan_enricher import enrich_plan
 from app.services.intelligent_export.tomoru_stages import (
     KpStageCatalog,
+    archive_stage_ids_from_stages,
     extract_years_from_text,
     normalize_homoglyphs,
     normalize_stage_name,
@@ -38,6 +39,14 @@ def kp_stages() -> KpStageCatalog:
 def test_normalize_stage_name():
     assert normalize_stage_name("  КП  дошло - связаться в 2020  ") == "кп дошло - связаться в 2020"
     assert normalize_stage_name("Тёплый") == "теплый"
+
+
+def test_archive_stage_ids_from_stages():
+    stages = [
+        {"id": "C15:4", "name": "Тёплый"},
+        {"id": "C15:UC_8W3UAD", "name": "Архив"},
+    ]
+    assert archive_stage_ids_from_stages(stages) == frozenset({"C15:UC_8W3UAD"})
 
 
 def test_resolve_novaya(kp_stages):

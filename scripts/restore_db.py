@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
-import sys
 import time
 
 
@@ -16,6 +16,7 @@ def run_psql(args: list[str], *, capture: bool = False) -> subprocess.CompletedP
     env.setdefault("PGUSER", os.environ.get("POSTGRES_USER", "bitrix"))
     env.setdefault("PGPASSWORD", os.environ.get("POSTGRES_PASSWORD", "bitrix"))
     env.setdefault("PGDATABASE", os.environ.get("POSTGRES_DB", "bitrix_export"))
+    env["PGCLIENTENCODING"] = "UTF8"
     return subprocess.run(
         ["psql", *args],
         env=env,
@@ -72,8 +73,25 @@ def main() -> None:
         print(f"db-restore: seed file not found at {seed_file}, skipping restore")
         return
 
+    encoding = run_psql(["-tAc", "SHOW client_encoding;"], capture=True)
+    if encoding.returncode == 0:
+        print(f"db-restore: client_encoding={encoding.stdout.strip()}")
+
     print(f"db-restore: restoring from {seed_file}...")
-    result = run_psql(["-v", "ON_ERROR_STOP=1", "-f", seed_file])
+    seed = shlex.quote(seed_file)
+    # Stream seed through grep filters for PG16 compatibility with pg_dump 17 dumps.
+    cmd = (
+        f"grep -Ev '^(SET transaction_timeout|\\\\restrict |\\\\unrestrict )' {seed} "
+        f"| psql -v ON_ERROR_STOP=1"
+    )
+    env = os.environ.copy()
+    env.setdefault("PGHOST", "db")
+    env.setdefault("PGPORT", "5432")
+    env.setdefault("PGUSER", os.environ.get("POSTGRES_USER", "bitrix"))
+    env.setdefault("PGPASSWORD", os.environ.get("POSTGRES_PASSWORD", "bitrix"))
+    env.setdefault("PGDATABASE", os.environ.get("POSTGRES_DB", "bitrix_export"))
+    env["PGCLIENTENCODING"] = "UTF8"
+    result = subprocess.run(["bash", "-c", cmd], env=env, check=False)
     if result.returncode != 0:
         raise SystemExit(result.returncode)
     print("db-restore: restore complete")

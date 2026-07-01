@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import String, cast, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -24,12 +24,83 @@ from app.models import (
     ENTITY_DEAL,
     utcnow,
 )
+from app.services.export_plan.payload_keys import camel_key
+from app.services.intelligent_export.contact_phone_heuristic import TOMORU_REGION_FIELD
 from app.services.intelligent_export.kp_legacy_stages import legacy_kp_stage_ids
 from app.utils.datetime_utils import parse_bitrix_datetime
 from app.utils.hash_utils import definition_hash, payload_hash
 
 
 ENTITY_KIND_MAP = {1: "lead", 2: "deal", 3: "contact", 4: "company"}
+
+
+def _resolve_stage_ids(
+    stage_id: str | None,
+    stage_ids: list[str] | None,
+) -> list[str] | None:
+    resolved = list(dict.fromkeys(stage_ids or []))
+    if stage_id and stage_id not in resolved:
+        resolved.insert(0, stage_id)
+    return resolved or None
+
+
+def _resolve_region_ids(
+    region_id: int | None,
+    region_ids: list[int] | None,
+) -> list[int] | None:
+    resolved = list(dict.fromkeys(region_ids or []))
+    if region_id is not None and region_id not in resolved:
+        resolved.insert(0, region_id)
+    return resolved or None
+
+
+def _build_export_entities_query(
+    portal_id: str,
+    entity_type_id: int,
+    *,
+    category_id: int | None = None,
+    stage_id: str | None = None,
+    stage_ids: list[str] | None = None,
+    region_id: int | None = None,
+    region_ids: list[int] | None = None,
+    region_field: str = TOMORU_REGION_FIELD,
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
+    is_deleted: bool = False,
+    exclude_stage_ids: list[str] | None = None,
+):
+    effective_stage_ids = _resolve_stage_ids(stage_id, stage_ids)
+    effective_region_ids = _resolve_region_ids(region_id, region_ids)
+
+    q = select(CrmEntity).where(
+        CrmEntity.portal_id == portal_id,
+        CrmEntity.entity_type_id == entity_type_id,
+        CrmEntity.is_deleted.is_(is_deleted),
+    )
+    if effective_stage_ids:
+        q = q.where(CrmEntity.stage_id.in_(effective_stage_ids))
+    if category_id is not None:
+        q = q.where(CrmEntity.category_id == category_id)
+    if effective_region_ids:
+        camel = camel_key(region_field)
+        region_conditions = []
+        for rid in effective_region_ids:
+            region_value = str(rid)
+            region_conditions.append(
+                or_(
+                    cast(CrmEntity.raw_payload[region_field].as_string(), String)
+                    == region_value,
+                    cast(CrmEntity.raw_payload[camel].as_string(), String) == region_value,
+                )
+            )
+        q = q.where(or_(*region_conditions))
+    if date_from is not None:
+        q = q.where(CrmEntity.created_time >= date_from)
+    if date_to is not None:
+        q = q.where(CrmEntity.created_time <= date_to)
+    if exclude_stage_ids:
+        q = q.where(CrmEntity.stage_id.notin_(exclude_stage_ids))
+    return q
 
 
 class CrmRepository:
@@ -551,6 +622,72 @@ class CrmRepository:
         q = q.order_by(sort_col.desc() if order == "desc" else sort_col.asc())
         q = q.offset((page - 1) * page_size).limit(page_size)
         return list(self.db.scalars(q)), total
+
+    def count_entities_for_export(
+        self,
+        entity_type_id: int,
+        *,
+        category_id: int | None = None,
+        stage_id: str | None = None,
+        stage_ids: list[str] | None = None,
+        region_id: int | None = None,
+        region_ids: list[int] | None = None,
+        region_field: str = TOMORU_REGION_FIELD,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        is_deleted: bool = False,
+        exclude_stage_ids: list[str] | None = None,
+    ) -> int:
+        q = _build_export_entities_query(
+            self.portal_id,
+            entity_type_id,
+            category_id=category_id,
+            stage_id=stage_id,
+            stage_ids=stage_ids,
+            region_id=region_id,
+            region_ids=region_ids,
+            region_field=region_field,
+            date_from=date_from,
+            date_to=date_to,
+            is_deleted=is_deleted,
+            exclude_stage_ids=exclude_stage_ids,
+        )
+        return int(self.db.scalar(select(func.count()).select_from(q.subquery())) or 0)
+
+    def list_entities_for_export(
+        self,
+        entity_type_id: int,
+        *,
+        category_id: int | None = None,
+        stage_id: str | None = None,
+        stage_ids: list[str] | None = None,
+        region_id: int | None = None,
+        region_ids: list[int] | None = None,
+        region_field: str = TOMORU_REGION_FIELD,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int | None = None,
+        is_deleted: bool = False,
+        exclude_stage_ids: list[str] | None = None,
+    ) -> list[CrmEntity]:
+        q = _build_export_entities_query(
+            self.portal_id,
+            entity_type_id,
+            category_id=category_id,
+            stage_id=stage_id,
+            stage_ids=stage_ids,
+            region_id=region_id,
+            region_ids=region_ids,
+            region_field=region_field,
+            date_from=date_from,
+            date_to=date_to,
+            is_deleted=is_deleted,
+            exclude_stage_ids=exclude_stage_ids,
+        )
+        q = q.order_by(CrmEntity.entity_id.asc())
+        if limit is not None:
+            q = q.limit(limit)
+        return list(self.db.scalars(q))
 
     def get_entity(self, entity_type_id: int, entity_id: int) -> CrmEntity | None:
         return self.db.scalar(

@@ -232,6 +232,17 @@ class BitrixClient:
             if s.get("STATUS_ID")
         ]
 
+    def get_lead_statuses(self) -> list[dict[str, Any]]:
+        stages = self.get_paginated(
+            "crm.status.list",
+            {"filter": {"ENTITY_ID": "STATUS"}, "order": {"SORT": "ASC"}},
+        )
+        return [
+            {"id": s.get("STATUS_ID", ""), "name": s.get("NAME", "")}
+            for s in stages
+            if s.get("STATUS_ID")
+        ]
+
     def get_users(self) -> list[dict[str, Any]]:
         users = self.get_paginated("user.get", {"ACTIVE": True})
         result = []
@@ -254,6 +265,23 @@ class BitrixClient:
         )
         elements = data.get("result", []) or []
         return [{"id": int(el.get("ID", 0)), "name": el.get("NAME", "")} for el in elements if el.get("ID")]
+
+    def list_regions(self, iblock_id: int = 49) -> list[dict[str, Any]]:
+        elements = self.get_paginated(
+            "lists.element.get",
+            {
+                "IBLOCK_TYPE_ID": "lists",
+                "IBLOCK_ID": iblock_id,
+                "order": {"NAME": "ASC"},
+            },
+        )
+        result = [
+            {"id": int(el.get("ID", 0)), "name": el.get("NAME", "")}
+            for el in elements
+            if el.get("ID")
+        ]
+        result.sort(key=lambda x: x["name"])
+        return result
 
     def get_entity_fields(self, entity_type: str) -> dict[str, str]:
         method = ENTITY_FIELD_METHODS.get(entity_type)
@@ -323,7 +351,7 @@ class BitrixClient:
         self,
         deal_filter: dict,
         select: list[str],
-        limit: int,
+        limit: int | None = None,
         region_field: str | None = None,
     ) -> list[dict[str, Any]]:
         fields = list(select)

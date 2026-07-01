@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Подготовка данных для Битрикс24{% endblock %}
+{% block content %}
+<div class="mb-4">
+    <h1 class="h3 mb-1">Подготовка данных для Битрикс24</h1>
+    <p class="text-muted mb-0">Загрузите файл с результатами прозвона. Система сопоставит телефоны со сделками и покажет, какие комментарии, CRM-дела и задачи будут подготовлены для Битрикс24.</p>
+</div>
+
+<div id="upload-alert"></div>
+
+<div class="card mb-4">
+    <div class="card-body">
+        <div id="dropzone" class="border border-2 border-dashed rounded p-5 text-center bg-light call-dropzone">
+            <p class="mb-2 fw-semibold">Перетащите файл сюда или нажмите для выбора</p>
+            <p class="text-muted small mb-3">XLSX, CSV · до 50 МБ</p>
+            <input type="file" id="file-input" accept=".xlsx,.csv" class="d-none">
+            <div id="file-info" class="d-none small text-start mt-3 p-3 bg-white rounded border"></div>
+            <div class="mt-3 d-none" id="upload-actions">
+                <button type="button" class="btn btn-outline-secondary btn-sm me-2" id="btn-clear-file">Удалить файл</button>
+                <button type="button" class="btn btn-primary" id="btn-upload">Загрузить и обработать</button>
+            </div>
+        </div>
+        <div id="upload-progress" class="d-none mt-3">
+            <div class="progress mb-2">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" style="width:100%"></div>
+            </div>
+            <p class="small text-muted mb-0" id="progress-text">Файл загружен. Сопоставляем телефоны со сделками и готовим операции Битрикс24.</p>
+        </div>
+    </div>
+</div>
+
+<div id="sheet-modal" class="d-none card mb-4 border-info">
+    <div class="card-header">Выбор листа Excel</div>
+    <div class="card-body">
+        <select id="sheet-select" class="form-select form-select-sm"></select>
+    </div>
+    <div class="card-footer">
+        <button class="btn btn-primary btn-sm" id="btn-apply-sheet">Выбрать лист и обработать</button>
+    </div>
+</div>
+
+<div id="mapping-modal" class="d-none card mb-4 border-warning">
+    <div class="card-header">Сопоставление колонок</div>
+    <div class="card-body" id="mapping-form"></div>
+    <div class="card-footer">
+        <button class="btn btn-primary btn-sm" id="btn-apply-mapping">Применить и обработать</button>
+    </div>
+</div>
+
+{% if imports %}
+<h2 class="h5 mb-3">Последние импорты</h2>
+<div class="table-responsive">
+    <table class="table table-hover align-middle">
+        <thead><tr><th>ID</th><th>Файл</th><th>Статус</th><th>Строк</th><th>Дата</th><th></th></tr></thead>
+        <tbody>
+        {% for imp in imports %}
+        <tr>
+            <td>{{ imp.id }}</td>
+            <td>{{ imp.original_filename }}</td>
+            <td><span class="badge status-{{ imp.status }}">{{ imp.status }}</span></td>
+            <td>{{ imp.total_rows }}</td>
+            <td>{{ format_dt(imp.created_at) if format_dt else imp.created_at }}</td>
+            <td><a href="/call-results/imports/{{ imp.id }}" class="btn btn-sm btn-outline-primary">Открыть</a></td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/call_results.js?v=20250629"></script>
+<script>initCallResultsUploadPage();</script>
+{% endblock %}

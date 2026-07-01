@@ -410,3 +410,8 @@ body.ie-fullpage .nav-link {
     overflow: auto;
     font-size: .78rem;
 }
+
+.call-dropzone.dragover {
+    background-color: #e7f1ff !important;
+    border-color: #0d6efd !important;
+}

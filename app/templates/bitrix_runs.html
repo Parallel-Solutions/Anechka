@@ -3,7 +3,7 @@
 {% block content %}
 <h1 class="mb-3">Запуски импорта</h1>
 <table class="table table-sm table-striped">
-    <thead><tr><th>ID</th><th>Режим</th><th>Статус</th><th>Фаза</th><th>Обработано</th><th>Начало</th><th>Ошибка</th></tr></thead>
+    <thead><tr><th>ID</th><th>Режим</th><th>Статус</th><th>Фаза</th><th>Источник</th><th>Обработано</th><th>Начало</th><th>Ошибка</th></tr></thead>
     <tbody>
     {% for r in runs %}
     <tr>
@@ -11,12 +11,13 @@
         <td>{{ r.mode }}</td>
         <td><span class="badge bg-{{ 'success' if r.status == 'completed' else 'danger' if r.status == 'failed' else 'primary' }}">{{ r.status }}</span></td>
         <td>{{ r.current_phase }}</td>
+        <td>{{ r.requested_by or 'ручной' }}</td>
         <td>{{ r.processed_count }}</td>
         <td>{{ format_dt(r.started_at) if r.started_at else format_dt(r.created_at) }}</td>
         <td class="text-danger small">{{ r.last_error or '' }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="7" class="text-muted">Нет запусков</td></tr>
+    <tr><td colspan="8" class="text-muted">Нет запусков</td></tr>
     {% endfor %}
     </tbody>
 </table>
