@@ -32,6 +32,12 @@ cd bitrix_export_web
 bash scripts/deploy_linux.sh
 ```
 
+Если клонирован monorepo (корень `/opt/Anechka` или `simpleAnechka`):
+
+```bash
+bash deploy.sh
+```
+
 ---
 
 ## 1. Требования к серверу
@@ -248,11 +254,49 @@ sudo ufw enable
 
 | Симптом | Решение |
 |---------|---------|
+| `migrate` exit code **3** | Alembic `CommandError` — см. [§11.1](#111-migrate-exit-code-3) |
 | `health` не отвечает | `docker compose logs web db migrate` — проверить, завершился ли restore/migrate |
 | Пустая база / «База пуста» | Выполнить импорт на `/bitrix-import` или проверить, что `git lfs pull` скачал `database.sql` |
 | «Кракозябры» в UI | `docker compose exec web python scripts/fix_mojibake.py` |
 | Bitrix не подключается | Проверить `BITRIX_WEBHOOK_URL` в настройках |
 | Порт 8000 занят | `ss -tlnp \| grep 8000` — освободить порт или изменить mapping в `docker-compose.yml` |
+
+### 11.1 migrate exit code 3
+
+Exit code **3** у сервиса `migrate` — это Alembic `CommandError`. Чаще всего БД после seed-restore содержит ревизию в `alembic_version`, которой нет в образе (устаревший код или деплой не из `bitrix_export_web/`).
+
+**Диагностика** (выполнять из каталога с `docker-compose.yml`):
+
+```bash
+cd /path/to/Anechka/bitrix_export_web   # не из корня monorepo без -f
+
+docker compose logs migrate
+docker compose logs db-restore | tail -30
+docker compose exec db psql -U bitrix -d bitrix_export -c "SELECT * FROM alembic_version;"
+ls alembic/versions/ | wc -l   # ожидается 10 файлов
+```
+
+| Сообщение в логах migrate | Решение |
+|---------------------------|---------|
+| `Can't locate revision identified by '...'` | `git pull && git lfs pull`, затем `docker compose up --build -d` |
+| `relation "..." already exists` | Схема уже есть: `docker compose run --rm migrate alembic stamp head`, затем `docker compose up -d` |
+| `password authentication failed` | `POSTGRES_PASSWORD` в `.env` не совпадает с volume `pgdata` — вернуть старый пароль или `docker compose down -v` |
+| `database.sql` — указатель LFS | `git lfs pull` (файл должен быть ~1.3 GB) |
+
+**Первый деплой** (данные не нужны):
+
+```bash
+cd bitrix_export_web
+git pull && git lfs pull
+docker compose down -v
+bash scripts/deploy_linux.sh
+```
+
+Если репозиторий клонирован как monorepo (корень `/opt/Anechka`), можно использовать обёртку из корня:
+
+```bash
+bash deploy.sh
+```
 
 ---
 

@@ -61,6 +61,28 @@ if grep -qE '^(APP_SECRET_KEY|POSTGRES_PASSWORD|BASIC_AUTH_PASSWORD|BOOTSTRAP_AD
   warn "В .env остались значения change-me — смените секреты для production"
 fi
 
+# 3b. Alembic head vs seed dump revision
+if [[ -d alembic/versions ]] && [[ -f database.sql ]]; then
+  seed_rev=$(sed -n '/COPY public\.alembic_version/,/^\\\./p' database.sql 2>/dev/null \
+    | grep -E '^[0-9a-f]+$' | head -1 || true)
+  all_revs=$(grep -h '^revision:' alembic/versions/*.py 2>/dev/null \
+    | sed -E 's/.*"([^"]+)".*/\1/' || true)
+  down_revs=$(grep -h '^down_revision:' alembic/versions/*.py 2>/dev/null \
+    | sed -E 's/.*"([^"]+)".*/\1/' | grep -v None || true)
+  code_head=""
+  for rev in $all_revs; do
+    if ! echo "$down_revs" | grep -qx "$rev"; then
+      code_head="$rev"
+      break
+    fi
+  done
+  if [[ -n "$seed_rev" && -n "$code_head" && "$seed_rev" != "$code_head" ]]; then
+    fail "Несовпадение ревизий: database.sql=$seed_rev, код (head)=$code_head. Выполните git pull && git lfs pull"
+  elif [[ -n "$seed_rev" && -n "$code_head" ]]; then
+    info "Alembic head совпадает с seed-дампом ($code_head)"
+  fi
+fi
+
 # 4. Start stack
 echo
 echo "=== docker compose up --build -d ==="
@@ -91,7 +113,11 @@ if [[ "$migrate_status" != "exited" ]]; then
 fi
 migrate_exit=$(docker compose ps -a migrate --format '{{.ExitCode}}' 2>/dev/null | head -1 || true)
 if [[ "$migrate_exit" != "0" ]]; then
-  fail "migrate: exit code $migrate_exit. Логи: docker compose logs migrate"
+  hint=""
+  if [[ "$migrate_exit" == "3" ]]; then
+    hint=" (Alembic CommandError — см. DEPLOY_LINUX.md §11: Can't locate revision / git pull + rebuild)"
+  fi
+  fail "migrate: exit code $migrate_exit.$hint Логи: docker compose logs migrate"
 fi
 info "migrate: alembic upgrade head завершён успешно"
 
