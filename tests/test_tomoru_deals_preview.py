@@ -256,6 +256,7 @@ def test_api_tomoru_deals_selects_architect_for_export(client, db_session):
     assert by_id[8152]["selected_for_export"] is True
     assert by_id[8151]["selected_for_export"] is False
     assert "архитектор" in (by_id[8152]["selection_reason"] or "").lower()
+    assert by_id[8152]["selection_confidence"] == 100.0
 
 
 def test_api_tomoru_deals_returns_bitrix_url(client, db_session):
@@ -530,10 +531,6 @@ def test_tomoru_export_page_has_filters(client):
     assert 'id="date_range"' not in resp.text
     assert 'flatpickr' in resp.text.lower()
 
-    assert 'id="jobs-history"' in resp.text
-
-    assert 'class="mt-5 d-none" id="jobs-history"' not in resp.text
-
     assert "tom-select" in resp.text.lower()
     assert 'id="stage-wrap"' in resp.text
     assert 'class="col-md-6 d-none" id="stage-wrap"' in resp.text
@@ -657,6 +654,7 @@ def test_save_contact_selection_persisted_in_preview(client, db_session):
     assert by_id[contact_a]["selected_for_export"] is True
     assert by_id[contact_b]["selected_for_export"] is True
     assert by_id[contact_a]["selection_reason"] == "сохранённый выбор"
+    assert by_id[contact_a]["selection_confidence"] == 100.0
 
 
 def test_save_empty_contact_selection_clears_checkboxes(client, db_session):
@@ -786,3 +784,145 @@ def test_count_entities_for_export_matches_list_filters(db_session):
     )
     assert count == 4
     assert len(rows) == 4
+
+
+def test_tomoru_deals_preview_uses_lpr_pick_cache(client, db_session, monkeypatch):
+    from unittest.mock import MagicMock
+
+    portal = _portal()
+    deal_id = 970
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Cache deal",
+            category_id=15,
+            stage_id="C15:NEW",
+            payload_hash="h970",
+            raw_payload={"id": deal_id, "title": "Cache deal", "closed": "N"},
+        )
+    )
+    db_session.commit()
+    repo = ContactRepository(db_session, portal)
+    repo.upsert_contact(
+        9701,
+        {"full_name": "Директор", "post": "Генеральный директор"},
+        raw_payload={"id": 9701, "POST": "Генеральный директор"},
+    )
+    repo.upsert_link(9701, ENTITY_DEAL, deal_id, is_primary=True)
+    db_session.commit()
+
+    mock_pick = MagicMock(
+        return_value=(
+            __import__(
+                "app.services.intelligent_export.contact_phone_heuristic",
+                fromlist=["ContactCandidate"],
+            ).ContactCandidate(contact=repo.get_contact(9701)),
+            "mock LPR",
+            77.0,
+        )
+    )
+    monkeypatch.setattr(
+        "app.services.export_deals_service.pick_contact_for_deal",
+        mock_pick,
+    )
+
+    resp1 = client.get("/api/tomoru/deals?category_id=15")
+    assert resp1.status_code == 200
+    deal1 = next(d for d in resp1.json()["deals"] if d["deal_id"] == deal_id)
+    assert deal1["contacts"][0]["selection_confidence"] == 100.0
+    assert mock_pick.call_count == 1
+
+    mock_pick.reset_mock()
+    resp2 = client.get("/api/tomoru/deals?category_id=15")
+    assert resp2.status_code == 200
+    deal2 = next(d for d in resp2.json()["deals"] if d["deal_id"] == deal_id)
+    assert deal2["contacts"][0]["selection_confidence"] == 100.0
+    assert mock_pick.call_count == 0
+
+
+def _add_deal_with_contact(db_session, portal, deal_id, contact_id, post, stage_id="C15:UNCERT_TEST"):
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title=f"Deal {deal_id}",
+            category_id=15,
+            stage_id=stage_id,
+            payload_hash=f"h{deal_id}",
+            raw_payload={"id": deal_id, "title": f"Deal {deal_id}", "closed": "N"},
+        )
+    )
+    repo = ContactRepository(db_session, portal)
+    repo.upsert_contact(
+        contact_id,
+        {"full_name": f"Contact {contact_id}", "post": post},
+        raw_payload={"id": contact_id, "POST": post, "DATE_CREATE": "2024-06-01T10:00:00+03:00"},
+    )
+    repo.upsert_link(contact_id, ENTITY_DEAL, deal_id, is_primary=True)
+
+
+def test_tomoru_deals_lpr_confidence_on_deal_and_summary(client, db_session, monkeypatch):
+    from app.services.intelligent_export.contact_lpr_classifier import KeywordLprClassifier
+
+    monkeypatch.setattr(
+        "app.services.export_deals_service.build_lpr_classifier",
+        lambda settings, lpr_config, use_llm=True: KeywordLprClassifier(lpr_config),
+    )
+    portal = _portal()
+    _add_deal_with_contact(db_session, portal, 980, 9801, "Менеджер")
+    _add_deal_with_contact(db_session, portal, 981, 9811, "Генеральный директор")
+    db_session.commit()
+
+    resp = client.get(
+        "/api/tomoru/deals?category_id=15&stage_id=C15:UNCERT_TEST&confidence_threshold=70"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lpr_view"] == "all"
+    assert data["lpr_summary"] is not None
+    assert data["lpr_summary"]["deals_total"] == 2
+    assert data["lpr_summary"]["confident_count"] == 2
+    assert data["lpr_summary"]["confident_percent"] == 100.0
+    assert data["lpr_summary"]["uncertain_count"] == 0
+    assert data["lpr_summary"]["threshold"] == 70.0
+
+    by_id = {d["deal_id"]: d for d in data["deals"]}
+    assert by_id[980]["lpr_confidence"] == 100.0
+    assert by_id[981]["lpr_confidence"] == 100.0
+
+
+def test_tomoru_deals_uncertain_view_filters_low_confidence(client, db_session, monkeypatch):
+    from app.services.intelligent_export.contact_lpr_classifier import KeywordLprClassifier
+
+    monkeypatch.setattr(
+        "app.services.export_deals_service.build_lpr_classifier",
+        lambda settings, lpr_config, use_llm=True: KeywordLprClassifier(lpr_config),
+    )
+    portal = _portal()
+    _add_deal_with_contact(db_session, portal, 982, 9821, "Менеджер")
+    repo = ContactRepository(db_session, portal)
+    repo.upsert_contact(
+        9822,
+        {"full_name": "Contact 9822", "post": "Специалист"},
+        raw_payload={"id": 9822, "POST": "Специалист", "DATE_CREATE": "2024-01-01T10:00:00+03:00"},
+    )
+    repo.upsert_link(9822, ENTITY_DEAL, 982, is_primary=False)
+    _add_deal_with_contact(db_session, portal, 983, 9831, "Генеральный директор")
+    db_session.commit()
+
+    resp = client.get(
+        "/api/tomoru/deals?category_id=15&stage_id=C15:UNCERT_TEST"
+        "&lpr_view=uncertain&confidence_threshold=70&offset=50&page_size=1"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["lpr_view"] == "uncertain"
+    assert data["total"] == 1
+    assert data["offset"] == 0
+    assert len(data["deals"]) == 1
+    assert data["deals"][0]["deal_id"] == 982
+    assert data["deals"][0]["lpr_confidence"] == 30.0
+    assert data["lpr_summary"]["confident_percent"] == 50.0

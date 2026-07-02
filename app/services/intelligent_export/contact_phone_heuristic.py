@@ -18,10 +18,11 @@ from app.services.export_plan.models_v2 import SheetPostProcess
 from app.services.export_plan.payload_keys import payload_lookup
 from app.services.intelligent_export.contact_lpr_classifier import (
     ContactLprClassifier,
+    LprPickResult,
     build_lpr_classifier,
 )
 from app.services.lpr_service import DEFAULT_LPR_STOPWORDS, LprConfig, contact_to_lpr_dict
-from app.services.phone_service import normalize_phone
+from app.services.phone_service import extract_phones_from_entity_payload, normalize_phone
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,12 @@ _ARCHITECT_RE = re.compile(
     r"|".join(re.escape(kw) for kw in _ARCHITECT_KEYWORDS),
     re.I,
 )
+
+CONFIDENCE_ARCHITECT = 100.0
+CONFIDENCE_KEYWORD = 80.0
+CONFIDENCE_FALLBACK = 30.0
+CONFIDENCE_MANUAL = 100.0
+CONFIDENCE_SINGLE = 100.0
 
 
 @dataclass
@@ -311,21 +318,7 @@ def pick_phone_for_contact(db: Session, portal_id: str, contact_id: int) -> str 
 
 
 def _phones_from_entity_payload(raw: dict[str, Any]) -> list[dict[str, str]]:
-    phones = parse_phones(payload_lookup(raw, "PHONE"))
-    if phones:
-        return phones
-    fm = payload_lookup(raw, "FM")
-    if isinstance(fm, list):
-        phone_items = [
-            item
-            for item in fm
-            if isinstance(item, dict)
-            and str(item.get("typeId") or item.get("TYPE_ID") or "").upper() == "PHONE"
-        ]
-        phones = parse_phones(phone_items)
-        if phones:
-            return phones
-    return []
+    return [{"value": v, "value_type": t} for v, t in extract_phones_from_entity_payload(raw)]
 
 
 def pick_company_phone(
@@ -360,15 +353,25 @@ def pick_company_phone(
     return None
 
 
+def _confidence_from_lpr_result(lpr_result: LprPickResult) -> float:
+    if lpr_result.method == "llm":
+        return lpr_result.confidence if lpr_result.confidence is not None else CONFIDENCE_KEYWORD
+    return CONFIDENCE_KEYWORD
+
+
+def _deal_only_contacts(candidates: list[ContactCandidate]) -> list[ContactCandidate]:
+    return [c for c in candidates if c.source == "deal"]
+
+
 def pick_contact_for_deal(
     candidates: list[ContactCandidate],
     *,
     lpr_config: LprConfig,
     classifier: ContactLprClassifier,
     deal_title: str = "",
-) -> tuple[ContactCandidate | None, str]:
+) -> tuple[ContactCandidate | None, str, float | None]:
     if not candidates:
-        return None, ""
+        return None, "", None
 
     active = [c for c in candidates if not _has_stopword(c.searchable_text(), lpr_config.stopwords)]
     pool = active or candidates
@@ -376,16 +379,21 @@ def pick_contact_for_deal(
     architects = [c for c in pool if detect_architect(c, stopwords=lpr_config.stopwords)]
     if architects:
         chosen = architects[0]
-        return chosen, f"архитектор ({chosen.source})"
+        return chosen, f"архитектор ({chosen.source})", CONFIDENCE_ARCHITECT
+
+    deal_contacts = _deal_only_contacts(candidates)
+    if len(deal_contacts) == 1:
+        chosen = deal_contacts[0]
+        return chosen, "единственный контакт сделки", CONFIDENCE_SINGLE
 
     lpr_result = classifier.pick_lpr(pool, deal_title=deal_title)
     if lpr_result.contact_id is not None:
         match = next((c for c in pool if c.contact_id == lpr_result.contact_id), None)
         if match:
-            return match, lpr_result.reason or "ЛПР"
+            return match, lpr_result.reason or "ЛПР", _confidence_from_lpr_result(lpr_result)
 
     last = max(pool, key=lambda c: c.sort_key())
-    return last, "последний добавленный контакт"
+    return last, "последний добавленный контакт", CONFIDENCE_FALLBACK
 
 
 def pick_phone_for_deal(
@@ -404,7 +412,7 @@ def pick_phone_for_deal(
         deal,
         include_company_contacts=post_process.include_company_contacts,
     )
-    contact, reason = pick_contact_for_deal(
+    contact, reason, _confidence = pick_contact_for_deal(
         candidates,
         lpr_config=lpr_config,
         classifier=classifier,
@@ -495,7 +503,13 @@ def build_tomoru_phone_rows(
             stats.phones_deduped += 1
             continue
         seen_phones.add(pick.phone)
-        out.append({"phone": pick.phone})
+        out.append(
+            {
+                "phone": pick.phone,
+                "deal_id": deal.entity_id,
+                "contact_id": pick.contact_id,
+            }
+        )
         _log(f"Сделка {deal.entity_id}: {pick.phone} ({pick.reason})")
 
     return out, stats

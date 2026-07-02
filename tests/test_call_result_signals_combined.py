@@ -4,7 +4,7 @@ from app.models import CallResultImportRow
 from app.services.call_results.action_planner import BitrixActionPlanner
 from app.services.call_results.deterministic_pre_classifier import DeterministicPreClassifier
 from app.services.call_results.fake_classifier import positive_result, callback_later_result
-from app.services.call_results.llm_schema import CallResultSignals
+from app.services.call_results.llm_schema import CallResultSignals, is_pure_no_answer, is_pure_refusal
 from app.services.call_results.signal_merger import SignalMerger
 from app.services.call_results.deterministic_pre_classifier import PreClassResult
 
@@ -139,3 +139,67 @@ def test_callback_llm_preserved_when_deal_not_found():
     assert not merged.signals.needs_manual_review
     assert merged.primary_outcome == "callback_later"
     assert not merged.requires_manual
+
+
+def test_is_pure_no_answer_by_primary_outcome():
+    assert is_pure_no_answer(None, primary_outcome="no_answer")
+
+
+def test_is_pure_no_answer_rejects_mixed():
+    sig = CallResultSignals(no_answer=True, callback_later_requested=True)
+    assert not is_pure_no_answer(sig, primary_outcome="mixed")
+
+
+def test_is_pure_no_answer_only_no_answer_signal():
+    sig = CallResultSignals(no_answer=True, summary="No Answer", confidence=1.0)
+    assert is_pure_no_answer(sig)
+
+
+def test_is_pure_refusal_by_primary_outcome():
+    assert is_pure_refusal(None, primary_outcome="refusal")
+
+
+def test_is_pure_refusal_rejects_mixed():
+    sig = CallResultSignals(explicit_refusal=True, callback_later_requested=True)
+    assert not is_pure_refusal(sig, primary_outcome="mixed")
+
+
+def test_is_pure_refusal_only_refusal_signal():
+    sig = CallResultSignals(explicit_refusal=True, confidence=0.9)
+    assert is_pure_refusal(sig)
+
+
+def test_refusal_preserved_when_deal_not_found():
+    from app.services.call_results.fake_classifier import refusal_result
+
+    llm = refusal_result()
+    pre = PreClassResult(category=None, reason="Interrupted", llm_required=True)
+    merged = SignalMerger().merge(
+        pre,
+        llm,
+        llm_valid=True,
+        match_requires_manual=True,
+        match_status="not_found",
+        match_reason="Телефон не найден",
+    )
+    assert merged.signals.explicit_refusal
+    assert merged.signals.deal_not_found
+    assert merged.signals.signal_reasons.get("deal_not_found") == "Телефон не найден"
+    assert merged.primary_outcome == "refusal"
+    assert not merged.requires_manual
+
+
+def test_refusal_in_manual_review_when_not_found():
+    from app.services.call_results.row_disposition import get_row_disposition
+
+    row = CallResultImportRow(
+        id=1, import_id=1, source_row_number=2, raw_data={}, normalized_data={},
+        match_status="not_found", match_reason="Телефон не найден",
+        llm_status="completed", llm_required=True, llm_confidence=0.9,
+        manually_overridden=False, llm_input_truncated=False, is_duplicate=False,
+        needs_manual_review=False, execution_status="pending", matched_deal_id=None,
+        primary_outcome="refusal",
+        business_signals={"explicit_refusal": True, "confidence": 0.9},
+        final_category="refusal",
+    )
+    assert get_row_disposition(row, []) == "manual_review"

@@ -259,6 +259,20 @@ function initSettingsPage() {
         });
     }
 
+    const llmBtn = document.getElementById('btn-test-llm');
+    const llmResult = document.getElementById('llm-result');
+    if (llmBtn) {
+        llmBtn.addEventListener('click', async () => {
+            llmResult.innerHTML = '<div class="text-muted">Проверка LLM...</div>';
+            try {
+                const data = await postJson('/api/llm/test', {});
+                showAlert(llmResult, data.message, data.ok ? 'success' : 'danger');
+            } catch (e) {
+                showAlert(llmResult, e.message);
+            }
+        });
+    }
+
     initLprConfig();
 }
 

@@ -136,6 +136,10 @@ class LlmInputBuilder:
     def source_columns(row: dict[str, Any]) -> set[str]:
         cols = set()
         for ev in row.get("scenario_events") or []:
-            if isinstance(ev, dict) and ev.get("source_column"):
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("source_column"):
                 cols.add(str(ev["source_column"]))
+            if ev.get("field"):
+                cols.add(str(ev["field"]))
         return cols

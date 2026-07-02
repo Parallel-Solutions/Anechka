@@ -234,6 +234,70 @@ class BitrixActionPlanner:
             a.payload["_group_id"] = group_id
         return actions
 
+    def plan_manual_create_contact(
+        self,
+        phone: str,
+        *,
+        deal_id: int | None,
+        contact_creation_allowed: bool = True,
+        contact_data: dict[str, Any] | None = None,
+    ) -> list[PlannedAction]:
+        if not contact_creation_allowed:
+            return []
+        digits = "".join(c for c in str(phone) if c.isdigit())
+        if len(digits) < 10:
+            return []
+
+        cd = contact_data or {}
+        contact_payload = {
+            "name": cd.get("name"),
+            "email": cd.get("email"),
+            "phone": cd.get("phone") or phone,
+            "position": cd.get("position"),
+            "extension": cd.get("extension"),
+        }
+        actions: list[PlannedAction] = []
+        order = 0
+        order = self._append(
+            actions,
+            PlannedAction(
+                method="crm.contact.list",
+                action_type="bitrix_find_contact",
+                operation_type="bitrix_find_contact",
+                payload={"phone": phone},
+                human_summary="Поиск контакта по телефону",
+                sort_order=order,
+            ),
+        )
+        order = self._append(
+            actions,
+            PlannedAction(
+                method="crm.contact.add",
+                action_type="bitrix_create_contact",
+                operation_type="bitrix_create_contact",
+                payload={"contact": contact_payload},
+                human_summary="Создание контакта по телефону звонка",
+                sort_order=order,
+            ),
+        )
+        if deal_id:
+            order = self._append(
+                actions,
+                PlannedAction(
+                    method="crm.deal.contact.add",
+                    action_type="bitrix_link_contact_to_deal",
+                    operation_type="bitrix_link_contact_to_deal",
+                    payload={"deal_id": deal_id, "is_primary": "N"},
+                    human_summary="Привязка контакта к сделке",
+                    sort_order=order,
+                ),
+            )
+
+        group_id = str(uuid.uuid4())
+        for a in actions:
+            a.payload["_group_id"] = group_id
+        return actions
+
     @staticmethod
     def _append(actions: list[PlannedAction], action: PlannedAction) -> int:
         actions.append(action)

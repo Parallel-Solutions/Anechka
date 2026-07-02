@@ -144,6 +144,44 @@ class CallResultLLMResult(BaseModel):
         )
 
 
+def is_pure_no_answer(
+    signals: CallResultSignals | dict[str, Any] | None,
+    *,
+    primary_outcome: str | None = None,
+) -> bool:
+    """True when the row is only «Не дозвонились» (no callback/refusal/hangup/etc.)."""
+    if primary_outcome == "no_answer":
+        return True
+    if signals is None:
+        return False
+    if isinstance(signals, dict):
+        sig = CallResultSignals.model_validate(signals)
+    else:
+        sig = signals
+    return sig.no_answer and sig.active_signal_count() == 1 and not sig.needs_manual_review
+
+
+def is_pure_refusal(
+    signals: CallResultSignals | dict[str, Any] | None,
+    *,
+    primary_outcome: str | None = None,
+) -> bool:
+    """True when the row is only «Отказ» (no mixed signals, no explicit manual flag)."""
+    if primary_outcome == "refusal":
+        return True
+    if signals is None:
+        return False
+    if isinstance(signals, dict):
+        sig = CallResultSignals.model_validate(signals)
+    else:
+        sig = signals
+    return (
+        sig.explicit_refusal
+        and sig.active_signal_count() == 1
+        and not sig.needs_manual_review
+    )
+
+
 def compute_primary_outcome(signals: CallResultSignals) -> str:
     if signals.needs_manual_review:
         return "manual_review"

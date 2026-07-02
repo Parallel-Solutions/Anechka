@@ -9,11 +9,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import ValidationError
 
-from app.config import Settings, get_call_results_model
+from app.config import Settings, get_call_results_model, get_llm_provider_label
 from app.services.call_results.classification_prompt import CallResultClassificationPromptBuilder
+from app.services.llm_client import make_openai_client
 from app.services.call_results.llm_schema import (
     SCHEMA_VERSION,
     CallResultLLMResult,
@@ -48,12 +49,13 @@ class OpenAICallResultClassifier(BaseCallResultClassifier):
     def __init__(self, settings: Settings):
         self.settings = settings
         self.model = get_call_results_model(settings)
+        self.provider = get_llm_provider_label(settings)
         self.prompt_builder = CallResultClassificationPromptBuilder()
-        self.client = OpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        self.client = make_openai_client(settings)
 
     def classify(self, input_data: dict[str, Any]) -> ClassifyOutcome:
         if not self.client:
-            return ClassifyOutcome(result=None, error_type="config", error_message="OpenAI API key не настроен")
+            return ClassifyOutcome(result=None, error_type="config", error_message="LLM API key не настроен")
 
         start = time.monotonic()
         last_error: str | None = None
@@ -93,7 +95,7 @@ class OpenAICallResultClassifier(BaseCallResultClassifier):
                     result=result,
                     duration_ms=duration,
                     token_usage=usage,
-                    provider="openai",
+                    provider=self.provider,
                     model=self.model,
                 )
             except (APITimeoutError, RateLimitError, APIConnectionError) as exc:
@@ -107,7 +109,7 @@ class OpenAICallResultClassifier(BaseCallResultClassifier):
                     error_type=last_error.lower().replace("error", "timeout") if "timeout" in str(exc).lower() else "rate_limit",
                     error_message=str(exc),
                     duration_ms=duration,
-                    provider="openai",
+                    provider=self.provider,
                     model=self.model,
                 )
             except (json.JSONDecodeError, ValidationError) as exc:
@@ -120,7 +122,7 @@ class OpenAICallResultClassifier(BaseCallResultClassifier):
                     error_type="schema",
                     error_message=str(exc),
                     duration_ms=duration,
-                    provider="openai",
+                    provider=self.provider,
                     model=self.model,
                 )
             except Exception as exc:
@@ -130,7 +132,7 @@ class OpenAICallResultClassifier(BaseCallResultClassifier):
                     error_type="error",
                     error_message=str(exc),
                     duration_ms=duration,
-                    provider="openai",
+                    provider=self.provider,
                     model=self.model,
                 )
 
@@ -139,7 +141,7 @@ class OpenAICallResultClassifier(BaseCallResultClassifier):
             result=None,
             error_type=last_error or "error",
             duration_ms=duration,
-            provider="openai",
+            provider=self.provider,
             model=self.model,
         )
 

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class PhoneSource(str, Enum):
@@ -30,6 +32,11 @@ class DealPhoneData:
     phones: list[PhoneEntry] = field(default_factory=list)
 
 
+def phone_hash(normalized_phone: str) -> str:
+    """SHA256 of a normalized digit-only phone string."""
+    return hashlib.sha256(normalized_phone.encode("utf-8")).hexdigest()
+
+
 def normalize_phone(phone: str) -> str | None:
     if not phone or not str(phone).strip():
         return None
@@ -38,6 +45,8 @@ def normalize_phone(phone: str) -> str | None:
         return None
     if len(digits) == 11 and digits.startswith("8"):
         digits = "7" + digits[1:]
+    elif len(digits) == 10:
+        digits = "7" + digits
     if len(digits) < 10:
         return None
     return digits
@@ -51,19 +60,61 @@ def format_display_phone(normalized: str) -> str:
     return normalized
 
 
-def extract_phones_from_multifield(items: list | None) -> list[tuple[str, str]]:
+def extract_phones_from_multifield(items: list | str | None) -> list[tuple[str, str]]:
     if not items:
+        return []
+    if isinstance(items, str):
+        from app.services.bitrix_import.contact_parser import parse_phones
+
+        return [(p["value"], p["value_type"]) for p in parse_phones(items)]
+    if not isinstance(items, list):
         return []
     result: list[tuple[str, str]] = []
     for item in items:
         if isinstance(item, dict):
-            value = item.get("VALUE", "")
-            ptype = item.get("VALUE_TYPE", "") or item.get("TYPE", "")
+            value = item.get("VALUE", "") or item.get("value", "")
+            ptype = item.get("VALUE_TYPE", "") or item.get("valueType", "") or item.get("TYPE", "")
         else:
             value = str(item)
             ptype = ""
         if value:
             result.append((str(value), str(ptype)))
+    return result
+
+
+def extract_phones_from_entity_payload(raw: dict[str, Any]) -> list[tuple[str, str]]:
+    """All phone values from a Bitrix entity raw_payload (contact/company/deal)."""
+    from app.services.bitrix_import.contact_parser import parse_phones
+    from app.services.export_plan.payload_keys import payload_lookup
+
+    result: list[tuple[str, str]] = []
+    seen_norm: set[str] = set()
+
+    def add_parsed(parsed: list[dict[str, str]]) -> None:
+        for p in parsed:
+            val, vt = p["value"], p["value_type"]
+            norm = normalize_phone(val)
+            if norm and norm not in seen_norm:
+                seen_norm.add(norm)
+                result.append((val, vt))
+
+    add_parsed(parse_phones(payload_lookup(raw, "PHONE")))
+
+    fm = payload_lookup(raw, "FM")
+    if isinstance(fm, list):
+        phone_items = [
+            item
+            for item in fm
+            if isinstance(item, dict)
+            and str(item.get("typeId") or item.get("TYPE_ID") or "").upper() == "PHONE"
+        ]
+        add_parsed(parse_phones(phone_items))
+
+    for key, vtype in (("phoneWork", "WORK"), ("phoneMobile", "MOBILE"), ("phoneMailing", "OTHER")):
+        val = raw.get(key)
+        if val and str(val).strip():
+            add_parsed(parse_phones(str(val).strip()))
+
     return result
 
 

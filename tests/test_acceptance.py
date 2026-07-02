@@ -121,7 +121,7 @@ def test_full_acceptance_flow(client, db_session, fake_planner):
     run = client.post(f"{API}/plans/{version_id}/run").json()
     run_id = run["run_id"]
 
-    path = run_intelligent_export_job(
+    path, _ = run_intelligent_export_job(
         db_session,
         get_settings(),
         {"portal_id": _portal(), "user_id": _system_user_id(db_session), "plan_version_id": version_id, "run_id": run_id},

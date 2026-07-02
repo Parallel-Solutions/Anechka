@@ -37,7 +37,7 @@ class CrmActionService:
         self.repo = CallResultRepository(db, portal_id)
         self.validator = BitrixPayloadValidator()
         self.retry_gw = RetryQueueGateway(db, portal_id)
-        self.search_gw = ContactSearchGateway(db, portal_id)
+        self.search_gw = ContactSearchGateway(db, portal_id, settings=settings)
         self.marker = ContactMarkerValidator(settings)
         if gateway is not None:
             self.gateway = gateway

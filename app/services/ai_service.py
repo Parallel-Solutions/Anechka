@@ -7,13 +7,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_export_dir
 from app.exceptions import AppError, BitrixAuthenticationError
 from app.models import ExportJob, utcnow
 from app.services.bitrix_client import BitrixClient
+from app.services.llm_client import make_openai_client
 from app.services.export_service import ExportStatistics
 from app.services.job_service import JobService
 from app.services.lpr_service import load_lpr_config
@@ -351,10 +351,13 @@ class AIChatResult:
 class AIService:
     def __init__(self, settings: Settings, db: Session):
         if not settings.openai_api_key:
-            raise ValueError("OpenAI API ключ не настроен")
+            raise ValueError("LLM API ключ не настроен")
         self.settings = settings
         self.db = db
-        self.client = OpenAI(api_key=settings.openai_api_key)
+        client = make_openai_client(settings)
+        if client is None:
+            raise ValueError("LLM API ключ не настроен")
+        self.client = client
         self.bitrix: BitrixClient | None = None
         if settings.bitrix_webhook_url:
             self.bitrix = BitrixClient(settings)

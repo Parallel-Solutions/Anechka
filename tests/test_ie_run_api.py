@@ -119,7 +119,7 @@ def test_job_runner_end_to_end(db_session):
     repo, conv, version = _save_version(db_session, user, _plan())
     run = repo.create_run(plan_version_id=version.id, conversation_id=conv.id, status="running")
 
-    path = run_intelligent_export_job(
+    path, _ = run_intelligent_export_job(
         db_session,
         get_settings(),
         {"portal_id": _portal(), "user_id": user.id, "plan_version_id": version.id, "run_id": run.id},
@@ -141,7 +141,7 @@ def test_download_after_completed_run(client, db_session):
 
     repo, conv, version = _save_version(db_session, user, _plan())
     run = repo.create_run(plan_version_id=version.id, conversation_id=conv.id, status="running")
-    path = run_intelligent_export_job(
+    path, _ = run_intelligent_export_job(
         db_session,
         get_settings(),
         {"portal_id": _portal(), "user_id": user.id, "plan_version_id": version.id, "run_id": run.id},

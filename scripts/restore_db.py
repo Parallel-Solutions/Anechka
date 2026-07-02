@@ -9,6 +9,17 @@ import subprocess
 import time
 
 
+def should_restore(table_count: int, crm_count: int, seed_exists: bool) -> bool:
+    """Return True when seed restore should run."""
+    if not seed_exists:
+        return False
+    if table_count == 0:
+        return True
+    if crm_count > 0:
+        return False
+    return True
+
+
 def run_psql(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.setdefault("PGHOST", "db")
@@ -62,15 +73,18 @@ def main() -> None:
     )
     print(f"db-restore: public tables count={table_count}")
 
+    crm_count = 0
     if table_count > 0:
         crm_count = scalar("SELECT count(*) FROM crm_entities;")
         print(f"db-restore: crm_entities count={crm_count}")
-        if crm_count > 0:
-            print("db-restore: database already has data, skipping restore")
-            return
 
-    if not os.path.isfile(seed_file):
-        print(f"db-restore: seed file not found at {seed_file}, skipping restore")
+    seed_exists = os.path.isfile(seed_file)
+    if not should_restore(table_count, crm_count, seed_exists):
+        if not seed_exists:
+            print(f"db-restore: seed file not found at {seed_file}, skipping restore")
+        elif table_count > 0 and crm_count > 0:
+            print("db-restore: database already has data, skipping restore")
+        print("db-restore: RESULT=skipped")
         return
 
     encoding = run_psql(["-tAc", "SHOW client_encoding;"], capture=True)
@@ -95,6 +109,7 @@ def main() -> None:
     if result.returncode != 0:
         raise SystemExit(result.returncode)
     print("db-restore: restore complete")
+    print("db-restore: RESULT=restored")
 
 
 if __name__ == "__main__":

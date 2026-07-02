@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CrmContact, CrmContactLink, CrmContactPhone, CrmEntity, utcnow
+from app.services.phone_service import normalize_phone
 
 
 class ContactRepository:
@@ -71,7 +72,7 @@ class ContactRepository:
     def sync_phones(
         self, contact_id: int, phones: list[dict[str, str]], primary_value: str | None
     ) -> None:
-        """Upsert телефонов (дедуп по value), пометка основного. Существующие не удаляем."""
+        """Upsert телефонов (дедуп по нормализованным цифрам), пометка основного."""
         now = utcnow()
         existing = list(
             self.db.scalars(
@@ -81,28 +82,63 @@ class ContactRepository:
                 )
             )
         )
-        by_value = {p.value: p for p in existing}
+        by_norm: dict[str, CrmContactPhone] = {}
+        for p in existing:
+            norm = normalize_phone(p.value)
+            if norm and norm not in by_norm:
+                by_norm[norm] = p
         for p in existing:
             p.is_primary = False
+
+        primary_norm = normalize_phone(primary_value) if primary_value else None
+
         for ph in phones:
             val, vt = ph["value"], ph["value_type"]
-            rec = by_value.get(val)
-            is_primary = val == primary_value
+            norm = normalize_phone(val)
+            if not norm:
+                continue
+            is_primary = primary_norm is not None and norm == primary_norm
+            rec = by_norm.get(norm)
             if rec is None:
-                self.db.add(
-                    CrmContactPhone(
-                        portal_id=self.portal_id,
-                        contact_id=contact_id,
-                        value=val,
-                        value_type=vt,
-                        is_primary=is_primary,
-                        first_imported_at=now,
-                    )
+                rec = CrmContactPhone(
+                    portal_id=self.portal_id,
+                    contact_id=contact_id,
+                    value=val,
+                    value_type=vt,
+                    is_primary=is_primary,
+                    first_imported_at=now,
                 )
+                self.db.add(rec)
+                by_norm[norm] = rec
             else:
+                rec.value = val
                 rec.value_type = vt
                 rec.is_primary = is_primary
                 rec.last_imported_at = now
+
+        self.db.flush()
+
+        all_rows = list(
+            self.db.scalars(
+                select(CrmContactPhone).where(
+                    CrmContactPhone.portal_id == self.portal_id,
+                    CrmContactPhone.contact_id == contact_id,
+                )
+            )
+        )
+        groups: dict[str, list[CrmContactPhone]] = {}
+        for rec in all_rows:
+            norm = normalize_phone(rec.value)
+            if norm:
+                groups.setdefault(norm, []).append(rec)
+        for group in groups.values():
+            if len(group) <= 1:
+                continue
+            keep = next((r for r in group if r.is_primary), group[-1])
+            for rec in group:
+                if rec is not keep:
+                    self.db.delete(rec)
+
         self.db.flush()
 
     def upsert_link(

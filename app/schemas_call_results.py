@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from app.services.call_results.llm_schema import AlternateContactData
 
 
 class MessageResponse(BaseModel):
@@ -67,6 +69,45 @@ class ExecuteRequest(BaseModel):
     retry_failed_only: bool = False
 
 
+class ManualPreviewRequest(BaseModel):
+    action: Literal["comment", "todo", "find_contact", "create_contact"]
+
+
+class ManualPreviewOut(BaseModel):
+    action: str
+    preview_text: str | None = None
+    todo_title: str | None = None
+    contact_data: AlternateContactData | None = None
+    found_contact: dict[str, Any] | None = None
+    search_method: str | None = None
+    ai_keywords: list[str] | None = None
+    error: str | None = None
+
+
+class ManualResolveRequest(BaseModel):
+    action: Literal["comment", "todo", "find_contact", "create_contact"]
+    confirmed: bool = True
+    preview_text: str | None = None
+    todo_title: str | None = None
+    todo_description: str | None = None
+    contact_data: AlternateContactData | None = None
+    found_contact_id: int | None = None
+    found_phone: str | None = None
+
+
+class ManualResolveOut(BaseModel):
+    action: str
+    message: str
+    row_id: int
+    prepared_method: str | None = None
+    prepared_methods: list[str] = Field(default_factory=list)
+    execution_enabled: bool = False
+    retry_queue_entry_id: int | None = None
+    contact_id: int | None = None
+    phone: str | None = None
+    lpr_reason: str | None = None
+
+
 class ActionPatchRequest(BaseModel):
     is_enabled: bool | None = None
     comment_text: str | None = None
@@ -96,9 +137,13 @@ class ActionOut(BaseModel):
     bitrix_deal_id: int | None = None
     responsible_name: str | None = None
     final_category: str | None = None
+    execution_status: str | None = None
+    last_error: str | None = None
 
 
-class RowOut(BaseModel):
+class RowListOut(BaseModel):
+    """Lightweight row for import detail list (no raw_data / llm_result / normalized_data)."""
+
     id: int
     source_row_number: int
     raw_phone: str | None
@@ -118,12 +163,10 @@ class RowOut(BaseModel):
     deterministic_category: str | None
     deterministic_reason: str | None
     llm_category: str | None = None
-    llm_result: dict | None
     llm_validation_errors: list | None
     matched_deal_id: int | None
+    matched_deal_bitrix_url: str | None = None
     matched_deal_local_id: int | None = None
-    raw_data: dict | None = None
-    normalized_data: dict | None = None
     technical_status: str | None = None
     call_result_display: str | None = None
     attempts: int | None = None
@@ -137,6 +180,17 @@ class RowOut(BaseModel):
     needs_manual_review: bool = False
     manual_review_reason: str | None = None
     execution_status: str | None = None
+    ui_disposition: Literal["manual_review", "manual_call", "auto_call"] | None = None
+
+
+class RowOut(RowListOut):
+    llm_result: dict | None = None
+    raw_data: dict | None = None
+    normalized_data: dict | None = None
+
+
+class RowRawOut(BaseModel):
+    raw_data: dict | None = None
 
 
 class RowLlmDebugOut(BaseModel):
@@ -194,6 +248,7 @@ class ImportSummaryOut(BaseModel):
     llm_completed: int = 0
     llm_pending: int = 0
     llm_failed: int = 0
+    llm_failed_config: int = 0
     llm_cached: int = 0
     llm_not_required: int = 0
     low_confidence: int = 0
@@ -205,7 +260,10 @@ class ImportSummaryOut(BaseModel):
     alternate_contact: int = 0
     callback_later: int = 0
     no_answer: int = 0
+    pure_no_answer: int = 0
+    retry_call_phones: int = 0
     hangup: int = 0
+    hangup_with_answers: int = 0
     hangup_without_answers: int = 0
     prepared_operations: int = 0
     executed_operations: int = 0
@@ -246,8 +304,8 @@ class ImportDetailOut(BaseModel):
     error_message: str | None
     duplicate_of_import_id: int | None
     summary: ImportSummaryOut
-    rows: list[RowOut] = Field(default_factory=list)
+    rows: list[RowListOut] = Field(default_factory=list)
     actions_by_method: dict[str, list[ActionOut]] = Field(default_factory=dict)
-    manual_review: list[RowOut] = Field(default_factory=list)
+    manual_review_ids: list[int] = Field(default_factory=list)
     attempt_history: list[AttemptHistoryOut] = Field(default_factory=list)
     hangup_rows: list[HangupRowOut] = Field(default_factory=list)

@@ -6,9 +6,10 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from app.config import Settings, get_planner_model
+from app.services.llm_client import make_openai_client
 from app.services.lpr_service import LprConfig, lpr_keyword_rank
 
 logger = logging.getLogger(__name__)
@@ -17,14 +18,27 @@ SYSTEM_PROMPT = """Ты анализируешь контакты CRM сделк
 лицо, принимающее решение (ЛПР): директор, руководитель, собственник, начальник
 и т.п. Не выбирай архитекторов (если есть явная должность «архитектор» — это не ЛПР).
 Не выбирай контактов с признаками «бывший», «уволен», «не работает».
-Ответь ТОЛЬКО JSON: {"contact_id": <int|null>, "reason": "<кратко на русском>"}.
-Если подходящего ЛПР нет — contact_id: null."""
+Ответь ТОЛЬКО JSON: {"contact_id": <int|null>, "reason": "<кратко на русском>", "confidence": <int 0-100>}.
+confidence — насколько ты уверен в выборе ЛПР (0 = совсем не уверен, 100 = абсолютно уверен).
+Если подходящего ЛПР нет — contact_id: null, confidence: 0."""
+
+
+def _parse_confidence(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(100.0, num))
 
 
 @dataclass
 class LprPickResult:
     contact_id: int | None
     reason: str
+    confidence: float | None = None
+    method: Literal["llm", "keyword"] | None = None
 
 
 class ContactProfile(Protocol):
@@ -59,8 +73,12 @@ class KeywordLprClassifier(ContactLprClassifier):
                 best = cand
                 best_reason = reason or "keyword LPR"
         if best is not None:
-            return LprPickResult(contact_id=best.contact_id, reason=best_reason)
-        return LprPickResult(contact_id=None, reason="")
+            return LprPickResult(
+                contact_id=best.contact_id,
+                reason=best_reason,
+                method="keyword",
+            )
+        return LprPickResult(contact_id=None, reason="", method="keyword")
 
 
 class OpenAIContactLprClassifier(ContactLprClassifier):
@@ -70,10 +88,8 @@ class OpenAIContactLprClassifier(ContactLprClassifier):
         self.model = get_planner_model(settings)
         self._client = None
         if settings.openai_api_key:
-            from openai import OpenAI
-
             timeout = max(5.0, float(settings.ie_planner_timeout_seconds))
-            self._client = OpenAI(api_key=settings.openai_api_key, timeout=timeout)
+            self._client = make_openai_client(settings, timeout=timeout)
 
     def pick_lpr(self, candidates: list[ContactProfile], *, deal_title: str = "") -> LprPickResult:
         if not candidates:
@@ -100,10 +116,16 @@ class OpenAIContactLprClassifier(ContactLprClassifier):
             data = json.loads(raw)
             cid = data.get("contact_id")
             reason = str(data.get("reason") or "")
+            confidence = _parse_confidence(data.get("confidence"))
             if cid is not None:
                 cid = int(cid)
                 if any(c.contact_id == cid for c in candidates):
-                    return LprPickResult(contact_id=cid, reason=reason or "OpenAI LPR")
+                    return LprPickResult(
+                        contact_id=cid,
+                        reason=reason or "OpenAI LPR",
+                        confidence=confidence,
+                        method="llm",
+                    )
         except Exception as exc:
             logger.warning("OpenAI LPR classifier failed: %s", exc)
 

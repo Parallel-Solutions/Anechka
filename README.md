@@ -18,35 +18,45 @@
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) или Docker Engine с Compose
 - Доступ к Bitrix24 REST API (входящий вебхук)
-- OpenAI API (опционально, для AI-анализа метаданных полей)
+- OpenAI API (опционально, для AI-функций: метаданные полей, умные выгрузки, call results)
 
 ## Установка и запуск (production)
 
+Подробная инструкция для Linux-сервера: **[DEPLOY_LINUX.md](DEPLOY_LINUX.md)**.
+
+**Prod-деплой одной командой** (после клонирования, `git lfs pull` и настройки `.env`):
+
 ```bash
 cd bitrix_export_web
-copy .env.example .env   # Windows
-# cp .env.example .env   # Linux / macOS
+bash scripts/deploy_linux.sh   # Linux
+# или: docker compose up --build -d
+```
+
+Локально (Windows):
+
+```bash
+cd bitrix_export_web
+copy .env.example .env
+docker compose up --build -d
 ```
 
 Задайте в `.env` надёжные значения: `APP_SECRET_KEY`, `POSTGRES_PASSWORD`, `BASIC_AUTH_PASSWORD`.
-
-```bash
-docker compose up --build -d
-```
 
 Откройте в браузере: **http://localhost:8000** — браузер запросит логин и пароль из `BASIC_AUTH_USERNAME` / `BASIC_AUTH_PASSWORD`.
 
 Сервисы: `db` → `db-restore` (восстановление `database.sql` на пустой БД) → `migrate` → `web`, `worker`.
 
-При первом запуске на пустом volume дамп [`database.sql`](database.sql) восстанавливается автоматически. При повторном запуске с существующими данными restore пропускается.
+При первом запуске на пустом volume дамп [`database.sql`](database.sql) восстанавливается автоматически (`RESULT=restored`). При повторном запуске с существующими данными restore пропускается (`RESULT=skipped`) — volume `pgdata` сохраняет БД между перезапусками.
 
 > **Клонирование репозитория:** `database.sql` хранится в Git LFS (~1.3 GB). После `git clone` выполните `git lfs pull`.
 
-**Кодировка seed-дампа:** не используйте перенаправление `> database.sql` в PowerShell/cmd — это ломает UTF-8. Для обновления дампа после исправления данных:
+**Кодировка seed-дампа:** не используйте перенаправление `> database.sql` в PowerShell/cmd — это ломает UTF-8. Для создания нового seed-дампа:
 
 ```bash
-docker compose exec web python scripts/dump_db.py
+docker compose exec web python scripts/dump_db.py --output /app/database.sql
 ```
+
+Проверка restore после деплоя: `docker compose logs db-restore | tail -5` (ожидается `RESULT=restored` или `RESULT=skipped`).
 
 Если в интерфейсе «кракозябры» вместо русского текста в диалогах/CRM, исправьте уже загруженные данные:
 
@@ -105,8 +115,12 @@ POSTGRES_DB=bitrix_export
 EXPORT_DIR=./exports
 FILE_STORAGE_DIR=./filestorage
 LOG_LEVEL=INFO
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4o
 OPENAI_BITRIX_METADATA_MODEL=
 ```
+
+Ключ LLM (`OPENAI_API_KEY`) можно получить на [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
 
 Полный список переменных: [.env.example](.env.example) и [BITRIX_IMPORT.md](BITRIX_IMPORT.md).
 

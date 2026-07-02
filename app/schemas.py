@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class SettingsUpdate(BaseModel):
     bitrix_webhook_url: str = ""
     openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o"
     connect_timeout: float = Field(default=10.0, gt=0)
     read_timeout: float = Field(default=60.0, gt=0)
@@ -27,12 +28,21 @@ class SettingsUpdate(BaseModel):
             raise ValueError("URL вебхука должен начинаться с http:// или https://")
         return v.strip()
 
+    @field_validator("openai_base_url")
+    @classmethod
+    def validate_base_url(cls, v: str) -> str:
+        v = v.strip()
+        if v and not (v.startswith("http://") or v.startswith("https://")):
+            raise ValueError("Base URL API должен начинаться с http:// или https://")
+        return v
+
 
 class SettingsResponse(BaseModel):
     bitrix_webhook_url: str
     bitrix_webhook_url_masked: str
     openai_api_key: str
     openai_api_key_masked: str
+    openai_base_url: str
     openai_model: str
     connect_timeout: float
     read_timeout: float
@@ -186,6 +196,7 @@ class ExportContactPreviewItem(BaseModel):
     is_primary: bool = False
     selected_for_export: bool = False
     selection_reason: str | None = None
+    selection_confidence: float | None = None
     bitrix_url: str | None = None
 
 
@@ -202,6 +213,14 @@ class ExportCompanyPreviewItem(BaseModel):
     selected_for_export: bool = False
 
 
+class LprConfidenceSummary(BaseModel):
+    threshold: float
+    deals_total: int
+    confident_count: int
+    confident_percent: float
+    uncertain_count: int
+
+
 class ExportDealItem(BaseModel):
     deal_id: int
     title: str
@@ -210,6 +229,7 @@ class ExportDealItem(BaseModel):
     category_id: int | None = None
     created_time: str | None = None
     bitrix_url: str | None = None
+    lpr_confidence: float | None = None
     company: ExportCompanyPreviewItem | None = None
     contacts: list[ExportContactPreviewItem] = Field(default_factory=list)
 
@@ -224,6 +244,8 @@ class ExportDealsResponse(BaseModel):
     note: str | None = None
     matched_total: int | None = None
     truncated: bool = False
+    lpr_summary: LprConfidenceSummary | None = None
+    lpr_view: Literal["all", "uncertain"] = "all"
 
 
 class ConnectionTestResponse(BaseModel):

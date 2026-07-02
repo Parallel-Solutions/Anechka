@@ -5,13 +5,24 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from dataclasses import dataclass
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, Response
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_call_result_storage_dir, get_call_results_model
 from app.dependencies import get_app_settings, get_call_result_classifier_instance, get_session
-from app.models import BitrixPreparedAction, CallResultImportRow, CallResultRowAudit, CrmEntity, utcnow
+from app.models import (
+    BitrixPreparedAction,
+    CallResultImportRow,
+    CallResultRowAudit,
+    CrmEntity,
+    CrmUser,
+    ENTITY_DEAL,
+    utcnow,
+)
 from app.repositories.call_result_repository import CallResultRepository
 from app.schemas_call_results import (
     ActionOut,
@@ -23,23 +34,36 @@ from app.schemas_call_results import (
     ImportDetailOut,
     ImportStatusOut,
     ImportSummaryOut,
+    ManualPreviewOut,
+    ManualPreviewRequest,
+    ManualResolveOut,
+    ManualResolveRequest,
     MessageResponse,
     RowLlmDebugOut,
+    RowListOut,
     RowOut,
     RowPatchRequest,
+    RowRawOut,
 )
 from app.services.auth_service import resolve_portal_id
 from app.services.call_results.classification_prompt import CallResultClassificationPromptBuilder
 from app.services.call_results.llm_input_builder import LlmInputBuilder
-from app.services.call_results.llm_schema import SCHEMA_VERSION
+from app.services.call_results.llm_schema import SCHEMA_VERSION, is_pure_no_answer
 from app.services.call_results.call_attempt_aggregator import CallAttemptAggregator
 from app.services.call_results.export_service import CallResultExportService
 from app.services.call_results.format_detector import FormatDetector
 from app.services.call_results.job_service import CallResultJobService
 from app.services.call_results.matcher import CallResultMatcher
+from app.services.call_results.manual_review_service import (
+    ManualReviewError,
+    ManualResolveConfirm,
+    ManualReviewService,
+)
 from app.services.call_results.orchestrator import CallResultOrchestrator
 from app.services.call_results.payload_builder import BitrixPayloadBuilder
 from app.services.call_results.payload_validator import BitrixPayloadValidator
+from app.services.call_results.row_disposition import get_row_disposition, is_manual_review_row
+from app.utils.portal import bitrix_deal_url
 
 router = APIRouter(tags=["call-results"])
 
@@ -48,6 +72,46 @@ def _portal_repo(db: Session) -> tuple[str, CallResultRepository]:
     settings = get_app_settings(db)
     portal_id = resolve_portal_id(settings)
     return portal_id, CallResultRepository(db, portal_id)
+
+
+@dataclass(frozen=True)
+class _DealLabel:
+    title: str | None
+    assigned_by_id: int | None
+
+
+def _load_deal_user_labels(
+    db: Session,
+    portal_id: str,
+    deal_ids: set[int],
+) -> tuple[dict[int, _DealLabel], dict[int, str]]:
+    if not deal_ids:
+        return {}, {}
+    deals = db.scalars(
+        select(CrmEntity).where(
+            CrmEntity.portal_id == portal_id,
+            CrmEntity.entity_type_id == ENTITY_DEAL,
+            CrmEntity.entity_id.in_(deal_ids),
+            CrmEntity.is_deleted.is_(False),
+        )
+    )
+    deal_map: dict[int, _DealLabel] = {}
+    user_ids: set[int] = set()
+    for deal in deals:
+        deal_map[deal.entity_id] = _DealLabel(title=deal.title, assigned_by_id=deal.assigned_by_id)
+        if deal.assigned_by_id:
+            user_ids.add(deal.assigned_by_id)
+    user_map: dict[int, str] = {}
+    if user_ids:
+        for user in db.scalars(
+            select(CrmUser).where(
+                CrmUser.portal_id == portal_id,
+                CrmUser.external_id.in_(user_ids),
+            )
+        ):
+            if user.display_name:
+                user_map[user.external_id] = user.display_name
+    return deal_map, user_map
 
 
 def _crm_context_for_row(row: CallResultImportRow, matcher: CallResultMatcher) -> dict:
@@ -111,9 +175,14 @@ def _build_row_llm_debug(
     )
 
 
-def _row_out(row: CallResultImportRow) -> RowOut:
+def _row_list_out(
+    row: CallResultImportRow,
+    portal_id: str,
+    row_actions: list[BitrixPreparedAction] | None = None,
+) -> RowListOut:
     nd = row.normalized_data or {}
-    return RowOut(
+    actions = row_actions if row_actions is not None else list(row.actions or [])
+    return RowListOut(
         id=row.id,
         source_row_number=row.source_row_number,
         raw_phone=row.raw_phone,
@@ -133,12 +202,12 @@ def _row_out(row: CallResultImportRow) -> RowOut:
         deterministic_category=row.deterministic_category,
         deterministic_reason=row.deterministic_reason,
         llm_category=row.llm_category,
-        llm_result=row.llm_result,
         llm_validation_errors=row.llm_validation_errors,
         matched_deal_id=row.matched_deal_id,
+        matched_deal_bitrix_url=bitrix_deal_url(portal_id, row.matched_deal_id)
+        if row.matched_deal_id
+        else None,
         matched_deal_local_id=row.matched_deal_local_id,
-        raw_data=row.raw_data,
-        normalized_data=nd,
         technical_status=row.technical_status,
         call_result_display=row.call_result_display,
         attempts=row.attempts,
@@ -152,6 +221,17 @@ def _row_out(row: CallResultImportRow) -> RowOut:
         needs_manual_review=row.needs_manual_review,
         manual_review_reason=row.manual_review_reason,
         execution_status=row.execution_status,
+        ui_disposition=get_row_disposition(row, actions),
+    )
+
+
+def _row_out(row: CallResultImportRow, portal_id: str) -> RowOut:
+    nd = row.normalized_data or {}
+    return RowOut(
+        **_row_list_out(row, portal_id).model_dump(),
+        llm_result=row.llm_result,
+        raw_data=row.raw_data,
+        normalized_data=nd,
     )
 
 
@@ -161,23 +241,70 @@ def _is_hangup_without_answers(row: CallResultImportRow) -> bool:
     return bool(sig.get("hangup_without_result")) and not nd.get("has_meaningful_content")
 
 
+def _is_hangup_with_answers(row: CallResultImportRow) -> bool:
+    sig = row.business_signals or {}
+    nd = row.normalized_data or {}
+    return bool(sig.get("hangup_without_result")) and bool(nd.get("has_meaningful_content"))
+
+
+def _row_needs_manual_review(
+    row: CallResultImportRow,
+    threshold: float,
+    actions: list[BitrixPreparedAction] | None = None,
+) -> bool:
+    del threshold  # disposition uses row flags and planned actions only
+    row_actions = actions if actions is not None else list(row.actions or [])
+    return is_manual_review_row(row, row_actions)
+
+
+def _collect_retry_call_phones(rows: list[CallResultImportRow]) -> list[str]:
+    seen: set[str] = set()
+    phones: list[str] = []
+    for row in rows:
+        if row.match_status == "not_found" or not row.matched_deal_id:
+            continue
+        if not is_pure_no_answer(row.business_signals, primary_outcome=row.primary_outcome):
+            continue
+        phone = row.normalized_phone or row.raw_phone
+        if not phone or phone in seen:
+            continue
+        seen.add(phone)
+        phones.append(phone)
+    return phones
+
+
 def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
     settings = get_app_settings(db)
     repo = CallResultRepository(db, portal_id)
     rows = repo.list_rows(imp.id)
     actions = repo.list_actions(imp.id)
-    matcher = CallResultMatcher(db, portal_id)
-    matcher.build_indexes()
-    threshold = settings.llm_call_results_confidence_threshold
+    deal_ids = {r.matched_deal_id for r in rows if r.matched_deal_id}
+    deal_map, user_map = _load_deal_user_labels(db, portal_id, deal_ids)
+
+    def deal_title(deal_id: int | None) -> str | None:
+        if not deal_id:
+            return None
+        label = deal_map.get(deal_id)
+        return label.title if label else None
+
+    def responsible_name(deal_id: int | None) -> str | None:
+        if not deal_id:
+            return None
+        label = deal_map.get(deal_id)
+        if not label or not label.assigned_by_id:
+            return None
+        return user_map.get(label.assigned_by_id)
 
     by_method: dict[str, list[ActionOut]] = {}
     row_by_id = {r.id: r for r in rows}
+    actions_by_row_id: dict[int, list[BitrixPreparedAction]] = {}
     counts = {"comments": 0, "todos": 0, "tasks": 0}
     disabled_actions = 0
 
     for a in actions:
+        actions_by_row_id.setdefault(a.import_row_id, []).append(a)
         row = row_by_id.get(a.import_row_id)
-        deal = matcher.get_deal(row.matched_deal_id) if row and row.matched_deal_id else None
+        matched_deal_id = row.matched_deal_id if row else None
         out = ActionOut(
             id=a.id,
             import_row_id=a.import_row_id,
@@ -192,10 +319,12 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
             is_enabled=a.is_enabled,
             user_modified=a.user_modified,
             phone=row.raw_phone if row else None,
-            deal_title=deal.title if deal else None,
-            bitrix_deal_id=row.matched_deal_id if row else None,
-            responsible_name=matcher.get_user_name(deal.assigned_by_id) if deal else None,
+            deal_title=deal_title(matched_deal_id),
+            bitrix_deal_id=matched_deal_id,
+            responsible_name=responsible_name(matched_deal_id),
             final_category=row.final_category if row else None,
+            execution_status=a.execution_status,
+            last_error=a.last_error,
         )
         by_method.setdefault(a.method, []).append(out)
         if a.is_enabled:
@@ -214,14 +343,11 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
     exact_duplicates = sum(1 for r in rows if r.is_duplicate)
     meaningful = sum(1 for r in rows if (r.normalized_data or {}).get("has_meaningful_content"))
 
-    manual = [
-        _row_out(r) for r in rows
-        if r.needs_manual_review
-        or r.match_status in ("ambiguous", "conflict", "not_found")
-        or r.final_category == "unknown"
-        or (r.llm_confidence is not None and r.llm_confidence < threshold)
-        or r.merge_conflict_reason
+    manual_review_ids = [
+        r.id for r in rows
+        if get_row_disposition(r, actions_by_row_id.get(r.id, [])) == "manual_review"
     ]
+    retry_call_phones = _collect_retry_call_phones(rows)
     agg = CallAttemptAggregator()
     history_groups = agg.group_by_phone(rows)
     attempt_history = [
@@ -239,7 +365,7 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
     for r in rows:
         if not _is_hangup_without_answers(r):
             continue
-        deal = matcher.get_deal(r.matched_deal_id) if r.matched_deal_id else None
+        deal = deal_map.get(r.matched_deal_id) if r.matched_deal_id else None
         hangup_rows.append(
             HangupRowOut(
                 id=r.id,
@@ -260,7 +386,7 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         repeat_phones=max(0, repeat_phones),
         meaningful_content_rows=meaningful,
         matched_rows=imp.matched_rows or sum(1 for r in rows if r.match_status == "matched"),
-        review_rows=len(manual),
+        review_rows=len(manual_review_ids),
         skipped_rows=imp.skipped_rows or sum(1 for r in rows if r.skip_reason),
         ambiguous_rows=sum(1 for r in rows if r.match_status == "ambiguous"),
         not_found_rows=sum(1 for r in rows if r.match_status == "not_found"),
@@ -273,18 +399,25 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         llm_completed=imp.llm_rows_completed,
         llm_pending=sum(1 for r in rows if r.llm_status == "pending"),
         llm_failed=imp.llm_rows_failed,
+        llm_failed_config=sum(
+            1 for r in rows
+            if r.llm_status in ("failed", "invalid") and r.llm_error_type in ("config", "disabled")
+        ),
         llm_cached=imp.llm_rows_cached,
         llm_not_required=imp.llm_rows_skipped,
         low_confidence=imp.llm_rows_low_confidence,
         manually_overridden=sum(1 for r in rows if r.manually_overridden),
         robot_callback=sum(1 for r in rows if r.final_category == "robot_callback"),
         refusal=sum(1 for r in rows if r.final_category == "refusal"),
-        manual_review=len(manual),
+        manual_review=len(manual_review_ids),
         positive=sum(1 for r in rows if r.primary_outcome in ("positive", "mixed") or (r.business_signals or {}).get("positive")),
         alternate_contact=sum(1 for r in rows if (r.business_signals or {}).get("alternate_contact_requested")),
         callback_later=sum(1 for r in rows if (r.business_signals or {}).get("callback_later_requested")),
-        no_answer=sum(1 for r in rows if (r.business_signals or {}).get("no_answer")),
+        no_answer=sum(1 for r in rows if r.primary_outcome == "no_answer"),
+        pure_no_answer=sum(1 for r in rows if r.primary_outcome == "no_answer"),
+        retry_call_phones=len(retry_call_phones),
         hangup=sum(1 for r in rows if (r.business_signals or {}).get("hangup_without_result")),
+        hangup_with_answers=sum(1 for r in rows if _is_hangup_with_answers(r)),
         hangup_without_answers=len(hangup_rows),
         prepared_operations=sum(1 for a in actions if a.execution_status == "prepared"),
         executed_operations=sum(1 for a in actions if a.execution_status == "succeeded"),
@@ -305,9 +438,9 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         error_message=imp.error_message,
         duplicate_of_import_id=imp.duplicate_of_import_id,
         summary=summary,
-        rows=[_row_out(r) for r in rows],
+        rows=[_row_list_out(r, portal_id, actions_by_row_id.get(r.id, [])) for r in rows],
         actions_by_method=by_method,
-        manual_review=manual,
+        manual_review_ids=manual_review_ids,
         attempt_history=attempt_history,
         hangup_rows=hangup_rows,
     )
@@ -336,6 +469,7 @@ def _build_status(imp) -> ImportStatusOut:
             llm_cached=imp.llm_rows_cached,
             llm_not_required=imp.llm_rows_skipped,
             low_confidence=imp.llm_rows_low_confidence,
+            execute_status=imp.execute_status,
         ),
     )
 
@@ -500,6 +634,15 @@ def get_row_llm_debug(import_id: int, row_id: int, db: Session = Depends(get_ses
     return _build_row_llm_debug(row, db, settings, portal_id)
 
 
+@router.get("/api/call-results/imports/{import_id}/rows/{row_id}/raw")
+def get_row_raw(import_id: int, row_id: int, db: Session = Depends(get_session)):
+    _, repo = _portal_repo(db)
+    row = repo.get_row(import_id, row_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Row not found")
+    return RowRawOut(raw_data=row.raw_data)
+
+
 @router.patch("/api/call-results/imports/{import_id}/rows/{row_id}")
 def patch_row(
     import_id: int,
@@ -583,7 +726,82 @@ def patch_row(
     orch = CallResultOrchestrator(db, settings, portal_id, classifier)
     orch.rebuild_row(import_id, row_id)
     db.commit()
-    return _row_out(row)
+    return _row_out(row, portal_id)
+
+
+@router.post("/api/call-results/imports/{import_id}/rows/{row_id}/manual-preview")
+def manual_preview_row(
+    import_id: int,
+    row_id: int,
+    body: ManualPreviewRequest,
+    db: Session = Depends(get_session),
+):
+    settings = get_app_settings(db)
+    portal_id, _ = _portal_repo(db)
+    classifier = get_call_result_classifier_instance(settings)
+    orch = CallResultOrchestrator(db, settings, portal_id, classifier)
+    svc = ManualReviewService(db, settings, portal_id, orch)
+    try:
+        result = svc.preview(import_id, row_id, body.action)
+    except ManualReviewError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    if result.error:
+        raise HTTPException(status_code=422, detail=result.error)
+    return ManualPreviewOut(
+        action=result.action,
+        preview_text=result.preview_text,
+        todo_title=result.todo_title,
+        contact_data=result.contact_data,
+        found_contact=result.found_contact,
+        search_method=result.search_method,
+        ai_keywords=result.ai_keywords,
+        error=result.error,
+    )
+
+
+@router.post("/api/call-results/imports/{import_id}/rows/{row_id}/manual-resolve")
+def manual_resolve_row(
+    import_id: int,
+    row_id: int,
+    body: ManualResolveRequest,
+    db: Session = Depends(get_session),
+):
+    settings = get_app_settings(db)
+    portal_id, _ = _portal_repo(db)
+    classifier = get_call_result_classifier_instance(settings)
+    orch = CallResultOrchestrator(db, settings, portal_id, classifier)
+    svc = ManualReviewService(db, settings, portal_id, orch)
+    confirm = ManualResolveConfirm(
+        preview_text=body.preview_text,
+        todo_title=body.todo_title,
+        todo_description=body.todo_description,
+        contact_data=body.contact_data,
+        found_contact_id=body.found_contact_id,
+        found_phone=body.found_phone,
+    )
+    try:
+        result = svc.resolve(import_id, row_id, body.action, confirm=confirm)
+    except ManualReviewError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    db.commit()
+    _, repo = _portal_repo(db)
+    row_actions = [
+        a for a in repo.list_actions(import_id)
+        if a.import_row_id == row_id and a.is_enabled
+    ]
+    prepared_methods = sorted({a.method for a in row_actions})
+    return ManualResolveOut(
+        action=result.action,
+        message=result.message,
+        row_id=result.row_id,
+        prepared_method=result.prepared_method,
+        prepared_methods=prepared_methods,
+        execution_enabled=settings.call_results_bitrix_execution_enabled,
+        retry_queue_entry_id=result.retry_queue_entry_id,
+        contact_id=result.contact_id,
+        phone=result.phone,
+        lpr_reason=result.lpr_reason,
+    )
 
 
 @router.patch("/api/call-results/imports/{import_id}/actions/{action_id}")
@@ -658,6 +876,29 @@ def rebuild_import(import_id: int, db: Session = Depends(get_session)):
     return MessageResponse(message="План пересобран", import_id=import_id)
 
 
+@router.post("/api/call-results/imports/{import_id}/rematch")
+def rematch_import(import_id: int, db: Session = Depends(get_session)):
+    settings = get_app_settings(db)
+    portal_id, repo = _portal_repo(db)
+    imp = repo.get_import(import_id)
+    if imp is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    classifier = get_call_result_classifier_instance(settings)
+    orch = CallResultOrchestrator(db, settings, portal_id, classifier)
+    updated = orch.rematch_import(import_id)
+    return MessageResponse(message=f"Пересопоставлено строк: {updated}", import_id=import_id)
+
+
+@router.post("/api/call-results/rematch-all")
+def rematch_all_imports(db: Session = Depends(get_session)):
+    settings = get_app_settings(db)
+    portal_id, _repo = _portal_repo(db)
+    classifier = get_call_result_classifier_instance(settings)
+    orch = CallResultOrchestrator(db, settings, portal_id, classifier)
+    updated = orch.rematch_all_imports()
+    return MessageResponse(message=f"Пересопоставлено строк: {updated}")
+
+
 @router.post("/api/call-results/imports/{import_id}/retry-llm")
 def retry_llm(import_id: int, db: Session = Depends(get_session)):
     CallResultJobService().submit_process(import_id, retry_llm_only=True)
@@ -715,6 +956,33 @@ def export_csv(import_id: int, db: Session = Depends(get_session)):
         content=content,
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="review_{import_id}.csv"'},
+    )
+
+
+@router.get("/api/call-results/imports/{import_id}/retry-call/export.csv")
+def export_retry_call_csv(import_id: int, db: Session = Depends(get_session)):
+    import tempfile
+    from pathlib import Path
+
+    from app.services.excel_service import ExcelService
+
+    _, repo = _portal_repo(db)
+    imp = repo.get_import(import_id)
+    if imp is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    rows = repo.list_rows(import_id)
+    phones = _collect_retry_call_phones(rows)
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        path = Path(tmp.name)
+    try:
+        ExcelService.write_tomoru_numbers_csv(phones, path)
+        content = path.read_text(encoding="utf-8-sig")
+    finally:
+        path.unlink(missing_ok=True)
+    return Response(
+        content=content,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="retry_call_{import_id}.csv"'},
     )
 
 

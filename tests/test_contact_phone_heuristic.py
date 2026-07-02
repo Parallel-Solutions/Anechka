@@ -21,6 +21,7 @@ from app.services.intelligent_export.contact_lpr_classifier import KeywordLprCla
 from app.services.intelligent_export.contact_phone_heuristic import (
     ContactCandidate,
     build_tomoru_phone_rows,
+    collect_deal_contacts,
     detect_architect,
     is_deal_archived,
     is_deal_in_category,
@@ -166,7 +167,7 @@ class FixedLprClassifier:
         self.contact_id = contact_id
 
     def pick_lpr(self, candidates, *, deal_title: str = "") -> LprPickResult:
-        return LprPickResult(contact_id=self.contact_id, reason="mock LPR")
+        return LprPickResult(contact_id=self.contact_id, reason="mock LPR", method="keyword")
 
 
 def test_is_deal_archived():
@@ -210,7 +211,7 @@ def test_pick_architect_over_lpr(db_session):
         ContactCandidate(contact=row["contact"], link=row["link"])
         for row in repo.get_contacts_for_parent(ENTITY_DEAL, deal_id)
     ]
-    chosen, reason = pick_contact_for_deal(
+    chosen, reason, confidence = pick_contact_for_deal(
         candidates,
         lpr_config=_lpr_config(),
         classifier=FixedLprClassifier(contact_id=1),
@@ -219,6 +220,7 @@ def test_pick_architect_over_lpr(db_session):
     assert chosen is not None
     assert chosen.contact_id == 2
     assert "архитектор" in reason.lower()
+    assert confidence == 100.0
 
 
 def test_pick_lpr_when_no_architect(db_session):
@@ -234,13 +236,14 @@ def test_pick_lpr_when_no_architect(db_session):
         ContactCandidate(contact=row["contact"], link=row["link"])
         for row in repo.get_contacts_for_parent(ENTITY_DEAL, deal_id)
     ]
-    chosen, _reason = pick_contact_for_deal(
+    chosen, _reason, confidence = pick_contact_for_deal(
         candidates,
         lpr_config=_lpr_config(),
         classifier=FixedLprClassifier(contact_id=11),
     )
     assert chosen is not None
     assert chosen.contact_id == 11
+    assert confidence == 80.0
 
 
 def test_pick_last_contact_fallback(db_session):
@@ -256,7 +259,7 @@ def test_pick_last_contact_fallback(db_session):
         ContactCandidate(contact=row["contact"], link=row["link"])
         for row in repo.get_contacts_for_parent(ENTITY_DEAL, deal_id)
     ]
-    chosen, reason = pick_contact_for_deal(
+    chosen, reason, confidence = pick_contact_for_deal(
         candidates,
         lpr_config=_lpr_config(),
         classifier=FixedLprClassifier(contact_id=None),
@@ -264,6 +267,41 @@ def test_pick_last_contact_fallback(db_session):
     assert chosen is not None
     assert chosen.contact_id == 21
     assert "последний" in reason
+    assert confidence == 30.0
+
+
+def test_pick_single_deal_contact_over_company_contacts(db_session):
+    deal_id = 103
+    company_id = 9004
+    deal = _deal_entity(db_session, deal_id, company_id=company_id)
+    _company_entity(db_session, company_id)
+    _contact(db_session, 22, post="Менеджер", date_create="2024-06-01T10:00:00+03:00")
+    _contact(
+        db_session,
+        23,
+        post="Генеральный директор",
+        company_id=company_id,
+        date_create="2024-01-01T10:00:00+03:00",
+    )
+    _link(db_session, 22, deal_id)
+    db_session.commit()
+
+    candidates = collect_deal_contacts(
+        db_session,
+        PORTAL,
+        deal,
+        include_company_contacts=True,
+    )
+    assert len(candidates) == 2
+    chosen, reason, confidence = pick_contact_for_deal(
+        candidates,
+        lpr_config=_lpr_config(),
+        classifier=FixedLprClassifier(contact_id=23),
+    )
+    assert chosen is not None
+    assert chosen.contact_id == 22
+    assert reason == "единственный контакт сделки"
+    assert confidence == 100.0
 
 
 def test_mobile_before_work_phone(db_session):

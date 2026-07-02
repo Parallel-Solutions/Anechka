@@ -108,3 +108,27 @@ def test_manual_review_no_bitrix():
     assert len(actions) == 1
     assert actions[0].operation_type == "manual_review_required"
     assert not actions[0].is_enabled
+
+
+def test_plan_manual_create_contact_without_deal():
+    actions = BitrixActionPlanner().plan_manual_create_contact(
+        "+79161234567",
+        deal_id=None,
+        contact_creation_allowed=True,
+    )
+    ops = [a.operation_type for a in actions]
+    assert ops == ["bitrix_find_contact", "bitrix_create_contact"]
+
+
+def test_plan_manual_create_contact_with_deal():
+    actions = BitrixActionPlanner().plan_manual_create_contact(
+        "+79161234567",
+        deal_id=1001,
+        contact_creation_allowed=True,
+    )
+    ops = [a.operation_type for a in actions]
+    assert ops == [
+        "bitrix_find_contact",
+        "bitrix_create_contact",
+        "bitrix_link_contact_to_deal",
+    ]

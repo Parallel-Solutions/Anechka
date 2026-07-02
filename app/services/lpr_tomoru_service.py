@@ -66,6 +66,7 @@ class LprReportRow:
     deal_title: str
     region: str
     reason: str
+    contact_id: int | None = None
 
 
 def _date_range_bounds(
@@ -195,6 +196,11 @@ class LprTomoruService:
         self.last_matched_total: int = 0
         self.last_truncated: bool = False
 
+    def pop_report_rows(self) -> list[LprReportRow]:
+        rows = self.report_rows
+        self.report_rows = []
+        return rows
+
     def _reset_export_stats(self) -> None:
         self.last_matched_total = 0
         self.last_truncated = False
@@ -313,15 +319,19 @@ class LprTomoruService:
             company_name: str,
             reason: str,
             contact: CrmContact | None = None,
+            contact_id: int | None = None,
         ) -> None:
             if not phone or phone in seen_phones:
                 return
             seen_phones.add(phone)
             fio = ""
             post = ""
+            resolved_contact_id = contact_id
             if contact is not None:
                 fio = contact.full_name or _format_fio_from_dict(_contact_lpr_dict(contact))
                 post = str(contact.post or contact.post_custom or "")
+                if resolved_contact_id is None:
+                    resolved_contact_id = int(contact.contact_id)
             report_rows.append(
                 LprReportRow(
                     phone=phone,
@@ -332,6 +342,7 @@ class LprTomoruService:
                     deal_title=deal_title,
                     region="",
                     reason=reason,
+                    contact_id=resolved_contact_id,
                 )
             )
             self.stats.phones_found += 1
@@ -381,6 +392,7 @@ class LprTomoruService:
                             company_name=company_name,
                             reason=reason,
                             contact=contact,
+                            contact_id=override_contact_id if override_contact_id > 0 else None,
                         )
                 else:
                     pick = pick_phone_for_deal(
@@ -402,6 +414,7 @@ class LprTomoruService:
                         company_name=company_name,
                         reason=pick.reason or "эвристика",
                         contact=picked_contact,
+                        contact_id=pick.contact_id,
                     )
             except ExportCancelledError:
                 raise
@@ -544,6 +557,7 @@ class LprTomoruService:
                         deal_title=entity_title,
                         region="",
                         reason=own_reason,
+                        contact_id=None,
                     )
                 )
                 self.stats.phones_found += 1
@@ -574,6 +588,7 @@ class LprTomoruService:
                         deal_title=entity_title,
                         region="",
                         reason=reason,
+                        contact_id=int(contact.contact_id),
                     )
                 )
                 self.stats.phones_found += 1
@@ -656,6 +671,7 @@ class LprTomoruService:
                                 deal_title=deal_title,
                                 region=region_name,
                                 reason=reason,
+                                contact_id=contact_id,
                             )
                         )
                         self.stats.phones_found += 1

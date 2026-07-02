@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_planner_model
 from app.services.export_plan.catalog import FieldCatalog
+from app.services.llm_client import make_openai_client
 from app.services.export_plan.plan_normalizer import normalize_llm_plan
 from app.services.export_plan.validator import ExportScope
 from app.services.intelligent_export.date_tokens import resolve_date_tokens
@@ -233,13 +234,14 @@ class OpenAIPlanner(BasePlanner):
     supports_repair = True
 
     def __init__(self, settings: Settings):
-        from openai import OpenAI
-
         if not settings.openai_api_key:
-            raise RuntimeError("OpenAI API key not configured")
+            raise RuntimeError("LLM API key not configured")
         self.settings = settings
         timeout = getattr(settings, "ie_planner_timeout_seconds", 30.0)
-        self.client = OpenAI(api_key=settings.openai_api_key, timeout=timeout)
+        client = make_openai_client(settings, timeout=timeout)
+        if client is None:
+            raise RuntimeError("LLM API key not configured")
+        self.client = client
         self.model = get_planner_model(settings)
         self.temperature = settings.ie_planner_temperature
 

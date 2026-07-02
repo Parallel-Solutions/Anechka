@@ -7,13 +7,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
-from app.config import BASE_DIR, get_export_dir, merge_db_settings
+from app.config import BASE_DIR, get_export_dir, get_llm_provider_label, merge_db_settings
 from app.database import get_db
 from app.dependencies import get_app_settings
 from app.exceptions import BitrixAuthenticationError
 from app.logging_config import setup_logging
 from app.schemas import ConnectionTestResponse, SettingsResponse, SettingsUpdate
 from app.services.bitrix_client import BitrixClient
+from app.services.llm_client import make_openai_client
 from app.services.security_service import mask_secret, mask_webhook
 from app.services.settings_service import load_settings_from_db, save_settings_to_db
 
@@ -27,6 +28,7 @@ def _to_response(settings) -> SettingsResponse:
         bitrix_webhook_url_masked=mask_webhook(settings.bitrix_webhook_url),
         openai_api_key=settings.openai_api_key,
         openai_api_key_masked=mask_secret(settings.openai_api_key),
+        openai_base_url=settings.openai_base_url,
         openai_model=settings.openai_model,
         connect_timeout=settings.connect_timeout,
         read_timeout=settings.read_timeout,
@@ -44,6 +46,7 @@ def save_settings(
     db: Session = Depends(get_db),
     bitrix_webhook_url: str = Form(""),
     openai_api_key: str = Form(""),
+    openai_base_url: str = Form("https://api.openai.com/v1"),
     openai_model: str = Form("gpt-4o"),
     connect_timeout: float = Form(10.0),
     read_timeout: float = Form(60.0),
@@ -66,6 +69,7 @@ def save_settings(
     update = SettingsUpdate(
         bitrix_webhook_url=webhook,
         openai_api_key=api_key,
+        openai_base_url=openai_base_url.strip() or "https://api.openai.com/v1",
         openai_model=openai_model.strip() or "gpt-4o",
         connect_timeout=connect_timeout,
         read_timeout=read_timeout,
@@ -102,3 +106,31 @@ def test_connection(db: Session = Depends(get_db)):
         )
     except Exception:
         return ConnectionTestResponse(ok=False, message="Ошибка при проверке подключения")
+
+
+@router.post("/api/llm/test", response_model=ConnectionTestResponse)
+def test_llm_connection(db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    if not settings.openai_api_key:
+        return ConnectionTestResponse(ok=False, message="LLM API ключ не настроен")
+    client = make_openai_client(settings, timeout=15.0)
+    if client is None:
+        return ConnectionTestResponse(ok=False, message="LLM API ключ не настроен")
+    try:
+        response = client.chat.completions.create(
+            model=settings.openai_model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=5,
+        )
+        reply = (response.choices[0].message.content or "").strip()
+        provider = get_llm_provider_label(settings)
+        suffix = f" ({provider})" if reply else ""
+        return ConnectionTestResponse(
+            ok=True,
+            message=f"Подключение к LLM успешно{suffix}",
+        )
+    except Exception as exc:
+        return ConnectionTestResponse(
+            ok=False,
+            message=f"Не удалось подключиться к LLM: {exc}",
+        )

@@ -17,6 +17,17 @@ class ValidationOutcome:
     warnings: list[str] = field(default_factory=list)
 
 
+def _source_field_known(sf: str, source_cols: set[str]) -> bool:
+    if not sf:
+        return True
+    if sf in source_cols:
+        return True
+    if sf.startswith("data:"):
+        bare = sf.removeprefix("data:")
+        return bare in source_cols or sf in source_cols
+    return f"data:{sf}" in source_cols
+
+
 class LLMResultValidator:
     def validate(
         self,
@@ -42,7 +53,16 @@ class LLMResultValidator:
 
         if ac.phone:
             digits = re.sub(r"\D", "", ac.phone)
-            if digits and len(digits) >= 10 and digits[-10:] not in re.sub(r"\D", "", source):
+            if digits and len(digits) < 10:
+                if not ac.extension:
+                    ac.extension = digits
+                ac.phone = None
+                warnings.append("Короткий номер интерпретирован как добавочный")
+                result.needs_manual_review = True
+                result.manual_review_reason = (
+                    result.manual_review_reason or "Добавочный/номер требует проверки"
+                )
+            elif digits and len(digits) >= 10 and digits[-10:] not in re.sub(r"\D", "", source):
                 errors.append("Телефон не найден в исходном тексте")
                 ac.phone = None
 
@@ -58,7 +78,7 @@ class LLMResultValidator:
 
         for ev in result.evidence:
             sf = ev.effective_field
-            if sf and source_cols and sf not in source_cols and not sf.startswith("data:"):
+            if sf and source_cols and not _source_field_known(sf, source_cols):
                 warnings.append(f"Evidence source_field не найден: {sf}")
             if ev.text.lower() not in source and ev.text[:20].lower() not in source:
                 warnings.append(f"Evidence не подтверждён: {ev.text[:30]}")
@@ -71,13 +91,6 @@ class LLMResultValidator:
 
         if result.explicit_refusal and result.positive:
             errors.append("Конфликт: refusal и positive")
-
-        if result.alternate_contact_requested and ac.phone:
-            digits = re.sub(r"\D", "", ac.phone)
-            if len(digits) < 10:
-                errors.append("Неполный телефон альтернативного контакта")
-                result.needs_manual_review = True
-                result.manual_review_reason = "Неполный телефон альтернативного контакта"
 
         valid = len(errors) == 0
         return ValidationOutcome(valid=valid, result=result if valid else None, errors=errors, warnings=warnings)

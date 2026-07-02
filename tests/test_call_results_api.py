@@ -18,6 +18,7 @@ from app.services.call_results.fake_classifier import (
     FakeCallResultClassifier,
     hot_lead_result,
     manager_callback_result,
+    refusal_result,
 )
 from app.services.call_results.orchestrator import CallResultOrchestrator
 
@@ -179,6 +180,127 @@ def test_export_csv(client, db_session, fake_classifier):
         assert resp.content[:3] == b"\xef\xbb\xbf"
 
 
+def test_export_retry_call_csv_not_found_deal(client, db_session, fake_classifier):
+    """No-answer without matched deal → manual review, no retry export."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    tomoru_file = Path(__file__).parent / "fixtures" / "call_results" / "tomoru" / "no_answer.csv"
+    content = tomoru_file.read_bytes()
+
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        orch = CallResultOrchestrator(db_session, settings, PORTAL, fake_classifier)
+        imp, _ = orch.save_uploaded_file(content, "batch_test_20260629T120000.csv")
+        db_session.commit()
+        orch.process_import(imp.id)
+
+        detail = client.get(f"/api/call-results/imports/{imp.id}").json()
+        assert detail["summary"]["pure_no_answer"] >= 1
+        assert detail["summary"]["retry_call_phones"] == 0
+        manual_ids = set(detail["manual_review_ids"])
+        no_answer_rows = [r for r in detail["rows"] if r["primary_outcome"] == "no_answer"]
+        assert no_answer_rows
+        assert all(r["id"] in manual_ids for r in no_answer_rows)
+        assert all(r["match_status"] == "not_found" for r in no_answer_rows)
+
+        resp = client.get(f"/api/call-results/imports/{imp.id}/retry-call/export.csv")
+        assert resp.status_code == 200
+        text = resp.content.decode("utf-8-sig")
+        assert "phone_number" in text
+        assert "73436053001" not in text
+
+
+def test_export_retry_call_csv_with_matched_deal(client, db_session, fake_classifier):
+    """No-answer with matched deal → auto retry export, not manual review."""
+    from app.config import get_settings
+
+    deal_id = 2001
+    phone = "73436053001"
+    db_session.add(
+        CrmEntity(
+            portal_id=PORTAL,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title=f"Deal {deal_id}",
+            assigned_by_id=42,
+            raw_payload={"closed": "N"},
+            payload_hash=f"hash-{deal_id}",
+        )
+    )
+    cid = deal_id + 5000
+    db_session.add(CrmContact(portal_id=PORTAL, contact_id=cid, full_name=f"C{cid}"))
+    db_session.add(
+        CrmContactPhone(
+            portal_id=PORTAL,
+            contact_id=cid,
+            value=phone,
+            value_type="MOBILE",
+            is_primary=True,
+        )
+    )
+    db_session.add(
+        CrmContactLink(
+            portal_id=PORTAL,
+            contact_id=cid,
+            parent_entity_type_id=ENTITY_DEAL,
+            parent_entity_id=deal_id,
+            is_primary=True,
+        )
+    )
+    db_session.commit()
+
+    settings = get_settings()
+    tomoru_file = Path(__file__).parent / "fixtures" / "call_results" / "tomoru" / "no_answer.csv"
+    content = tomoru_file.read_bytes()
+
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        orch = CallResultOrchestrator(db_session, settings, PORTAL, fake_classifier)
+        imp, _ = orch.save_uploaded_file(content, "batch_test_20260629T120000.csv")
+        db_session.commit()
+        orch.process_import(imp.id)
+
+        detail = client.get(f"/api/call-results/imports/{imp.id}").json()
+        assert detail["summary"]["pure_no_answer"] >= 1
+        assert detail["summary"]["retry_call_phones"] >= 1
+        manual_ids = set(detail["manual_review_ids"])
+        no_answer_rows = [r for r in detail["rows"] if r["primary_outcome"] == "no_answer"]
+        assert no_answer_rows
+        assert all(r["match_status"] == "matched" for r in no_answer_rows)
+        assert not any(r["id"] in manual_ids for r in no_answer_rows)
+
+        resp = client.get(f"/api/call-results/imports/{imp.id}/retry-call/export.csv")
+        assert resp.status_code == 200
+        text = resp.content.decode("utf-8-sig")
+        assert "73436053001" in text
+
+
+def test_pure_refusal_in_manual_review_when_not_found(client, db_session):
+    from app.config import get_settings
+
+    settings = get_settings()
+    tomoru_file = Path(__file__).parent / "fixtures" / "call_results" / "tomoru" / "refusal_vhod.csv"
+    content = tomoru_file.read_bytes()
+    classifier = FakeCallResultClassifier(responses=[refusal_result()])
+
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        orch = CallResultOrchestrator(db_session, settings, PORTAL, classifier)
+        imp, _ = orch.save_uploaded_file(content, "batch_refusal_20260629T120000.csv")
+        db_session.commit()
+        orch.process_import(imp.id)
+
+        detail = client.get(f"/api/call-results/imports/{imp.id}").json()
+        manual_ids = set(detail["manual_review_ids"])
+        refusal_rows = [r for r in detail["rows"] if r["primary_outcome"] == "refusal"]
+        assert refusal_rows
+        assert all(r["match_status"] == "not_found" for r in refusal_rows)
+        assert all(r["id"] in manual_ids for r in refusal_rows)
+
+
+def test_export_retry_call_csv_not_found(client):
+    resp = client.get("/api/call-results/imports/999999/retry-call/export.csv")
+    assert resp.status_code == 404
+
+
 def test_tomoru_upload_auto(client, db_session, fake_classifier, monkeypatch):
     from app.config import get_settings
 
@@ -319,4 +441,37 @@ def test_row_llm_debug_endpoint(client, db_session, fake_classifier):
             assert data["deterministic_reason"] or data["deterministic_category"]
 
         resp404 = client.get(f"/api/call-results/imports/{imp.id}/rows/999999/llm")
+        assert resp404.status_code == 404
+
+
+def test_import_detail_slim_payload(client, db_session, fake_classifier):
+    from app.config import get_settings
+
+    _seed_crm(db_session)
+    settings = get_settings()
+    content = FIXTURE.read_bytes()
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        orch = CallResultOrchestrator(db_session, settings, PORTAL, fake_classifier)
+        imp, _ = orch.save_uploaded_file(content, "demo.csv")
+        db_session.commit()
+        orch.process_import(imp.id)
+
+        detail = client.get(f"/api/call-results/imports/{imp.id}").json()
+        assert detail["status"] == "ready"
+        assert "manual_review" not in detail
+        assert isinstance(detail["manual_review_ids"], list)
+        assert detail["rows"]
+        row = detail["rows"][0]
+        assert "raw_data" not in row
+        assert "llm_result" not in row
+        assert "normalized_data" not in row
+
+        row_id = row["id"]
+        raw_resp = client.get(f"/api/call-results/imports/{imp.id}/rows/{row_id}/raw")
+        assert raw_resp.status_code == 200
+        raw = raw_resp.json()
+        assert "raw_data" in raw
+        assert isinstance(raw["raw_data"], dict)
+
+        resp404 = client.get(f"/api/call-results/imports/{imp.id}/rows/999999/raw")
         assert resp404.status_code == 404

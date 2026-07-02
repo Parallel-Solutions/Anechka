@@ -123,6 +123,9 @@ class JobService:
                 self._append_event(job, message)
                 db.commit()
 
+            result_path: str
+            tomoru_registry_rows: list[dict[str, Any]] = []
+
             if job.mode == "region":
                 tel_service = TelPoRegService(
                     settings=settings,
@@ -146,6 +149,15 @@ class JobService:
                     log_callback=log_event,
                 )
                 result_path = lpr_service.run_lpr_tomoru_export(params)
+                report_rows = lpr_service.pop_report_rows()
+                if report_rows:
+                    from app.services.export_phone_registry import ExportPhoneRegistry
+
+                    portal_id = resolve_portal_id(settings)
+                    saved = ExportPhoneRegistry(db).save_from_lpr_report(portal_id, job.id, report_rows)
+                    if saved:
+                        self._append_event(job, f"Реестр телефонов: сохранено {saved} записей")
+                        db.commit()
             elif job.mode == "category_full":
                 full_service = FullCategoryExportService(
                     settings=settings,
@@ -164,7 +176,7 @@ class JobService:
                     job.current_step = step
                     db.commit()
 
-                result_path = run_intelligent_export_job(
+                result_path, tomoru_registry_rows = run_intelligent_export_job(
                     db,
                     settings,
                     params,
@@ -180,6 +192,20 @@ class JobService:
                     log_callback=log_event,
                 )
                 result_path = service.run_stage_export(params)
+
+            if tomoru_registry_rows:
+                from app.services.auth_service import resolve_portal_id
+                from app.services.export_phone_registry import ExportPhoneRegistry
+
+                saved = ExportPhoneRegistry(db).save_entries(
+                    resolve_portal_id(settings),
+                    job.id,
+                    "intelligent_export",
+                    tomoru_registry_rows,
+                )
+                if saved:
+                    self._append_event(job, f"Реестр телефонов: сохранено {saved} записей")
+                    db.commit()
 
             job.status = "completed"
             job.result_file = result_path

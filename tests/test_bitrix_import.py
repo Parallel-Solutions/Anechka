@@ -512,3 +512,35 @@ def test_ai_reanalysis_runs_profiling_first(db_session, sync_repo):
         mock_profile.assert_called_once()
         mock_ai.assert_called_once()
         assert mock_ai.call_args.kwargs.get("force") is True
+
+
+def test_enrich_all_primary_enriches_company_contacts_for_linked_deals(db_session, crm_repo, sync_repo):
+    """Deals that already have contact links must still trigger company contact sync."""
+    from app.models import CrmContactLink, ENTITY_DEAL
+
+    deal_payload = dict(SAMPLE_DEAL)
+    deal_payload["companyId"] = 6591
+    crm_repo.upsert_entity(ENTITY_DEAL, 201, deal_payload)
+    db_session.add(
+        CrmContactLink(
+            portal_id=PORTAL,
+            contact_id=50,
+            parent_entity_type_id=ENTITY_DEAL,
+            parent_entity_id=201,
+            is_primary=True,
+        )
+    )
+    db_session.commit()
+
+    run = sync_repo.create_run(PORTAL, "contacts_backfill")
+    client = MagicMock(spec=BitrixCrmClient)
+    client.diagnostics = MagicMock(to_dict=lambda: {})
+    client.api_requests_count = 0
+
+    with patch("app.services.bitrix_import.orchestrator.BitrixCrmClient", return_value=client):
+        orch = ImportOrchestrator(db_session, _settings(), PORTAL, run.id)
+        orch.client = client
+        with patch.object(orch.enrichment, "enrich_company_contacts", return_value=2) as mock_company:
+            orch._enrich_all_primary()
+
+    mock_company.assert_called_once_with(6591)

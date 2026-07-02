@@ -64,11 +64,29 @@
     </div>
 </div>
 <div class="card shadow-sm mb-4" id="deals-preview-card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-        <span>Сделки и контакты</span>
-        <span class="small text-muted" id="deals-total"></span>
+    <div class="card-header">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <span>Сделки и контакты</span>
+            <span class="small text-muted" id="deals-total"></span>
+        </div>
     </div>
     <div class="card-body">
+        <div id="deals-lpr-toolbar" class="d-none d-flex flex-wrap align-items-center gap-3 mb-3">
+            <div class="btn-group btn-group-sm" role="group" aria-label="Вид таблицы ЛПР">
+                <input type="radio" class="btn-check" name="lpr-view" id="lpr-view-all" value="all" autocomplete="off">
+                <label class="btn btn-outline-secondary" for="lpr-view-all">Все</label>
+                <input type="radio" class="btn-check" name="lpr-view" id="lpr-view-uncertain" value="uncertain" checked autocomplete="off">
+                <label class="btn btn-outline-secondary" for="lpr-view-uncertain">Только неуверенные</label>
+            </div>
+            <div id="confidence-threshold-wrap" class="d-flex align-items-center gap-2">
+                <label class="form-label mb-0 small text-muted" for="confidence-threshold">Порог:</label>
+                <div class="input-group input-group-sm" style="width: 6rem;">
+                    <input type="number" class="form-control" id="confidence-threshold" min="0" max="100" value="70" step="1">
+                    <span class="input-group-text">%</span>
+                </div>
+            </div>
+            <span class="small" id="lpr-summary"></span>
+        </div>
         <div id="deals-note" class="small text-muted mb-2"></div>
         <div id="deals-placeholder" class="text-muted small">Выберите стадию, регион или период — тогда здесь появится превью сделок.</div>
         <div id="deals-loading" class="text-muted small d-none">Загрузка…</div>
@@ -82,6 +100,7 @@
                         <th>Название</th>
                         <th>Стадия</th>
                         <th>Дата создания</th>
+                        <th>Уверенность ЛПР</th>
                     </tr>
                 </thead>
                 <tbody id="deals-tbody"></tbody>
@@ -94,38 +113,6 @@
         </div>
     </div>
 </div>
-<section class="mt-5" id="jobs-history">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2 class="h5 mb-0">Последние Tomoru-выгрузки</h2>
-        <a href="/exports" class="btn btn-sm btn-outline-secondary">Вся история</a>
-    </div>
-    <div class="table-responsive">
-        <table class="table table-hover align-middle">
-            <thead>
-            <tr>
-                <th>ID</th>
-                <th>Статус</th>
-                <th>Прогресс</th>
-                <th>Создана</th>
-                <th></th>
-            </tr>
-            </thead>
-            <tbody>
-            {% for job in jobs %}
-            <tr>
-                <td>{{ job.id }}</td>
-                <td><span class="badge status-{{ job.status }}">{{ job.status }}</span></td>
-                <td>{{ job.progress_percent }}%</td>
-                <td>{{ format_dt(job.created_at) }}</td>
-                <td><a href="/exports/{{ job.id }}" class="btn btn-sm btn-outline-primary">Открыть</a></td>
-            </tr>
-            {% else %}
-            <tr><td colspan="5" class="text-muted text-center">Задач пока нет</td></tr>
-            {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</section>
 {% endblock %}
 {% block scripts %}
 <link href="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/css/tom-select.bootstrap5.min.css" rel="stylesheet">
@@ -157,6 +144,8 @@
         limit: PAGE_SIZE,
         total: 0,
         loading: false,
+        lprView: 'uncertain',
+        confidenceThreshold: 70,
     };
     const contactOverrides = {};
     const manuallyChangedDeals = new Set();
@@ -468,6 +457,8 @@
         document.getElementById('deals-total').textContent = '';
         document.getElementById('deals-note').textContent = '';
         document.getElementById('deals-note').classList.remove('text-warning');
+        document.getElementById('deals-lpr-toolbar').classList.add('d-none');
+        document.getElementById('lpr-summary').textContent = '';
         document.getElementById('deals-placeholder').classList.remove('d-none');
         document.getElementById('deals-empty').classList.add('d-none');
         document.getElementById('deals-table-wrap').classList.add('d-none');
@@ -580,17 +571,33 @@
     function sourceLabel(source) {
         return source === 'company' ? 'Компания' : 'Сделка';
     }
+    function formatConfidence(confidence) {
+        if (confidence == null || confidence === '') {
+            return '—';
+        }
+        const value = Math.round(Number(confidence));
+        if (Number.isNaN(value)) {
+            return '—';
+        }
+        let cls = 'text-danger';
+        if (value >= 80) {
+            cls = 'text-success';
+        } else if (value >= 50) {
+            cls = 'text-warning';
+        }
+        return `<span class="${cls}">${value}%</span>`;
+    }
     function renderCompanyBlock(company, dealId) {
         if (!company) {
             return (
                 '<tr class="table-light">'
-                + '<td colspan="5" class="p-0">'
+                + '<td colspan="6" class="p-0">'
                 + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
                 + '<thead><tr class="small text-muted">'
-                + '<th class="ps-4" colspan="6">Компания</th>'
+                + '<th class="ps-4" colspan="7">Компания</th>'
                 + '</tr></thead><tbody>'
                 + '<tr class="table-light">'
-                + '<td colspan="6" class="small text-muted ps-4">Компания не указана</td>'
+                + '<td colspan="7" class="small text-muted ps-4">Компания не указана</td>'
                 + '</tr></tbody></table></td></tr>'
             );
         }
@@ -607,16 +614,17 @@
         const titleAttr = hasPhone ? ' title="Телефон компании"' : ' title="Телефон компании не указан"';
         return (
             '<tr class="table-light">'
-            + '<td colspan="5" class="p-0">'
+            + '<td colspan="6" class="p-0">'
             + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
             + '<thead><tr class="small text-muted">'
-            + '<th class="ps-4">Название</th><th>Описание</th><th>Телефон</th><th>Источник</th><th>Выгрузка</th>'
+            + '<th class="ps-4">Название</th><th>Описание</th><th>Телефон</th><th>Источник</th><th>Уверенность</th><th>Выгрузка</th>'
             + '</tr></thead><tbody>'
             + '<tr class="table-light">'
             + `<td class="ps-4">${nameCell}</td>`
             + `<td>${descCell}</td>`
             + `<td>${fmtDealCell(company.phone)}</td>`
             + '<td>Компания</td>'
+            + '<td>—</td>'
             + '<td class="text-center">'
             + `<input type="checkbox" class="contact-export-cb company-export-cb form-check-input m-0"`
             + ` data-deal-id="${dealId}" data-contact-id="${COMPANY_PHONE_ID}"`
@@ -631,7 +639,7 @@
         if (!contacts || contacts.length === 0) {
             return (
                 '<tr class="table-light">'
-                + '<td colspan="6" class="small text-muted ps-4">Контактов нет</td>'
+                + '<td colspan="7" class="small text-muted ps-4">Контактов нет</td>'
                 + '</tr>'
             );
         }
@@ -648,6 +656,7 @@
             const titleAttr = contact.selection_reason
                 ? ` title="${escapeHtml(contact.selection_reason)}"`
                 : '';
+            const confidenceCell = formatConfidence(contact.selection_confidence);
             return (
                 '<tr class="table-light">'
                 + `<td class="ps-4">${nameCell}${primaryMark}</td>`
@@ -655,6 +664,7 @@
                 + `<td>${descCell}</td>`
                 + `<td>${fmtDealCell(contact.phone)}</td>`
                 + `<td>${sourceLabel(contact.source)}</td>`
+                + `<td>${confidenceCell}</td>`
                 + `<td class="text-center">`
                 + `<input type="checkbox" class="contact-export-cb form-check-input m-0"`
                 + ` data-deal-id="${dealId}" data-contact-id="${contact.contact_id}"`
@@ -664,6 +674,43 @@
                 + '</tr>'
             );
         }).join('');
+    }
+    function readLprToolbarState() {
+        const uncertainRadio = document.getElementById('lpr-view-uncertain');
+        const thresholdEl = document.getElementById('confidence-threshold');
+        let threshold = parseInt(thresholdEl.value, 10);
+        if (Number.isNaN(threshold)) {
+            threshold = 70;
+        }
+        threshold = Math.max(0, Math.min(100, threshold));
+        return {
+            lprView: uncertainRadio && uncertainRadio.checked ? 'uncertain' : 'all',
+            confidenceThreshold: threshold,
+        };
+    }
+    function updateThresholdVisibility() {
+        const wrap = document.getElementById('confidence-threshold-wrap');
+        if (!wrap) return;
+        wrap.classList.toggle('d-none', dealsState.lprView !== 'uncertain');
+    }
+    function syncLprToolbarFromState() {
+        document.getElementById('lpr-view-all').checked = dealsState.lprView === 'all';
+        document.getElementById('lpr-view-uncertain').checked = dealsState.lprView === 'uncertain';
+        document.getElementById('confidence-threshold').value = String(dealsState.confidenceThreshold);
+        updateThresholdVisibility();
+    }
+    function renderLprSummary(data) {
+        const summaryEl = document.getElementById('lpr-summary');
+        const toolbarEl = document.getElementById('deals-lpr-toolbar');
+        if (!data.available || !data.lpr_summary) {
+            toolbarEl.classList.add('d-none');
+            summaryEl.textContent = '';
+            return;
+        }
+        toolbarEl.classList.remove('d-none');
+        syncLprToolbarFromState();
+        const s = data.lpr_summary;
+        summaryEl.innerHTML = `Уверенных ЛПР: <strong>${s.confident_percent}%</strong> (${s.confident_count} из ${s.deals_total})`;
     }
     function renderDeals(data) {
         const noteEl = document.getElementById('deals-note');
@@ -675,10 +722,22 @@
         const totalEl = document.getElementById('deals-total');
         const pageInfo = document.getElementById('deals-page-info');
         dealsState.total = data.total || 0;
+        if (data.lpr_view) {
+            dealsState.lprView = data.lpr_view;
+        }
         placeholderEl.classList.add('d-none');
         noteEl.textContent = data.note || '';
         noteEl.classList.toggle('text-warning', Boolean(data.note && !data.available));
-        totalEl.textContent = data.available ? `Всего: ${dealsState.total}` : '';
+        renderLprSummary(data);
+        if (data.available && data.lpr_summary) {
+            if (dealsState.lprView === 'uncertain') {
+                totalEl.textContent = `Неуверенных: ${dealsState.total} из ${data.lpr_summary.deals_total}`;
+            } else {
+                totalEl.textContent = `Всего: ${data.lpr_summary.deals_total}`;
+            }
+        } else {
+            totalEl.textContent = data.available ? `Всего: ${dealsState.total}` : '';
+        }
         if (!data.available) {
             emptyEl.textContent = data.note || 'Список недоступен';
             emptyEl.classList.remove('d-none');
@@ -711,14 +770,15 @@
                 + `<td>${titleCell}</td>`
                 + `<td>${fmtDealCell(deal.stage_name || deal.stage_id)}</td>`
                 + `<td>${fmtDealCell(deal.created_time)}</td>`
+                + `<td>${formatConfidence(deal.lpr_confidence)}</td>`
                 + '</tr>'
             );
             const contactsHeader = (
                 '<tr class="table-light">'
-                + '<td colspan="5" class="p-0">'
+                + '<td colspan="6" class="p-0">'
                 + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
                 + '<thead><tr class="small text-muted">'
-                + '<th class="ps-4">ФИО</th><th>Должность</th><th>Описание</th><th>Телефон</th><th>Источник</th><th>Выгрузка</th>'
+                + '<th class="ps-4">ФИО</th><th>Должность</th><th>Описание</th><th>Телефон</th><th>Источник</th><th>Уверенность</th><th>Выгрузка</th>'
                 + '</tr></thead><tbody>'
                 + renderContactRows(deal.contacts, deal.deal_id)
                 + '</tbody></table></td></tr>'
@@ -733,14 +793,18 @@
         const start = dealsState.offset + 1;
         const end = dealsState.offset + data.deals.length;
         pageInfo.textContent = `${start}–${end} из ${dealsState.total}`;
-        pager.classList.toggle('d-none', dealsState.total <= dealsState.limit);
+        const hidePager = dealsState.lprView === 'uncertain' || dealsState.total <= dealsState.limit;
+        pager.classList.toggle('d-none', hidePager);
         document.getElementById('deals-prev').disabled = dealsState.offset <= 0;
         document.getElementById('deals-next').disabled = dealsState.offset + dealsState.limit >= dealsState.total;
     }
     async function loadDealsPreview() {
         if (dealsState.loading) return;
         const f = parseFiltersFromUrl();
-        dealsState.offset = f.offset;
+        const toolbar = readLprToolbarState();
+        dealsState.lprView = toolbar.lprView;
+        dealsState.confidenceThreshold = toolbar.confidenceThreshold;
+        dealsState.offset = dealsState.lprView === 'uncertain' ? 0 : f.offset;
         if (!hasActiveFilters(f)) {
             showPreviewPlaceholder();
             return;
@@ -752,9 +816,13 @@
             const params = new URLSearchParams({
                 entity_type: getEntityType(),
                 category_id: String(categoryId),
-                offset: String(f.offset),
-                page_size: String(dealsState.limit),
+                lpr_view: dealsState.lprView,
+                confidence_threshold: String(dealsState.confidenceThreshold),
             });
+            if (dealsState.lprView === 'all') {
+                params.set('offset', String(dealsState.offset));
+                params.set('page_size', String(dealsState.limit));
+            }
             f.stage_ids.forEach((id) => params.append('stage_id', id));
             f.region_ids.forEach((id) => params.append('region_id', String(id)));
             if (f.date_from) params.set('date_from', f.date_from);
@@ -868,6 +936,31 @@
             initStageTomSelect();
         }
         onFilterChange({ offset: 0, stage_ids: [] });
+    });
+    document.querySelectorAll('input[name="lpr-view"]').forEach((el) => {
+        el.addEventListener('change', () => {
+            if (!el.checked) return;
+            dealsState.lprView = el.value;
+            updateThresholdVisibility();
+            if (dealsState.lprView === 'uncertain') {
+                loadDealsPreview();
+            } else {
+                onFilterChange({ offset: 0 });
+            }
+        });
+    });
+    let thresholdTimer = null;
+    document.getElementById('confidence-threshold').addEventListener('input', () => {
+        if (thresholdTimer) clearTimeout(thresholdTimer);
+        thresholdTimer = setTimeout(() => {
+            dealsState.confidenceThreshold = readLprToolbarState().confidenceThreshold;
+            loadDealsPreview();
+        }, 400);
+    });
+    document.getElementById('confidence-threshold').addEventListener('change', () => {
+        if (thresholdTimer) clearTimeout(thresholdTimer);
+        dealsState.confidenceThreshold = readLprToolbarState().confidenceThreshold;
+        loadDealsPreview();
     });
     document.getElementById('deals-prev').addEventListener('click', () => {
         const f = parseFiltersFromUrl();

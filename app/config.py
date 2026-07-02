@@ -17,6 +17,7 @@ load_dotenv(BASE_DIR / ".env")
 SETTING_KEYS = (
     "bitrix_webhook_url",
     "openai_api_key",
+    "openai_base_url",
     "openai_model",
     "openai_bitrix_metadata_model",
     "connect_timeout",
@@ -40,6 +41,7 @@ class Settings(BaseSettings):
     )
     bitrix_webhook_url: str = Field(default="", alias="BITRIX_WEBHOOK_URL")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_base_url: str = Field(default="https://api.openai.com/v1", alias="OPENAI_BASE_URL")
     openai_model: str = Field(default="gpt-4o", alias="OPENAI_MODEL")
     openai_bitrix_metadata_model: str = Field(default="", alias="OPENAI_BITRIX_METADATA_MODEL")
     connect_timeout: float = Field(default=10.0, alias="CONNECT_TIMEOUT")
@@ -145,6 +147,7 @@ def _env_overrides() -> dict[str, Any]:
     mapping = {
         "bitrix_webhook_url": "BITRIX_WEBHOOK_URL",
         "openai_api_key": "OPENAI_API_KEY",
+        "openai_base_url": "OPENAI_BASE_URL",
         "openai_model": "OPENAI_MODEL",
         "openai_bitrix_metadata_model": "OPENAI_BITRIX_METADATA_MODEL",
         "connect_timeout": "CONNECT_TIMEOUT",
@@ -203,6 +206,27 @@ def get_planner_model(settings: Settings) -> str:
     return settings.ie_planner_model or settings.openai_model
 
 
+def get_llm_provider_label(settings: Settings) -> str:
+    base_url = (settings.openai_base_url or "").lower().rstrip("/")
+    if not base_url or "api.openai.com" in base_url:
+        return "openai"
+    return "custom"
+
+
+def _normalize_llm_settings(merged: dict[str, Any]) -> None:
+    base_url = str(merged.get("openai_base_url") or "")
+    if "vsellm" in base_url.lower():
+        merged["openai_base_url"] = "https://api.openai.com/v1"
+
+    model = str(merged.get("openai_model") or "")
+    if model.startswith("openai/"):
+        merged["openai_model"] = model.removeprefix("openai/")
+
+    metadata_model = str(merged.get("openai_bitrix_metadata_model") or "")
+    if metadata_model.startswith("openai/"):
+        merged["openai_bitrix_metadata_model"] = metadata_model.removeprefix("openai/")
+
+
 def get_export_dir(settings: Settings | None = None) -> Path:
     s = settings or get_settings()
     path = Path(s.export_dir)
@@ -231,6 +255,7 @@ def merge_db_settings(db_values: dict[str, str]) -> Settings:
             merged[key] = int(raw)
         else:
             merged[key] = raw
+    _normalize_llm_settings(merged)
     # model_construct не перечитывает env и сохраняет приоритет db_values
     return Settings.model_construct(**merged)
 
@@ -239,6 +264,7 @@ def settings_to_db_dict(settings: Settings) -> dict[str, str]:
     return {
         "bitrix_webhook_url": settings.bitrix_webhook_url,
         "openai_api_key": settings.openai_api_key,
+        "openai_base_url": settings.openai_base_url,
         "openai_model": settings.openai_model,
         "openai_bitrix_metadata_model": settings.openai_bitrix_metadata_model,
         "connect_timeout": str(settings.connect_timeout),

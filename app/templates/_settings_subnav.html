@@ -1,0 +1,6 @@
+{% set p = request.url.path %}
+<nav class="nav nav-pills mb-4">
+    <a class="nav-link{% if p == '/settings' %} active{% endif %}" href="/settings">Настройки</a>
+    <a class="nav-link{% if p.startswith('/exports') %} active{% endif %}" href="/exports">История</a>
+    <a class="nav-link{% if p.startswith('/bitrix-import') %} active{% endif %}" href="/bitrix-import">CRM Импорт</a>
+</nav>

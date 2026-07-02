@@ -37,9 +37,9 @@ from app.services.call_results.llm_gateway import BaseCallResultClassifier
 from app.services.call_results.llm_input_builder import LlmInputBuilder
 from app.services.call_results.llm_result_validator import LLMResultValidator
 from app.services.call_results.contact_marker_validator import ContactMarkerValidator
-from app.services.call_results.llm_schema import CLASSIFIER_VERSION, PLANNER_VERSION, SCHEMA_VERSION, CallResultLLMResult, legacy_category_from_signals
+from app.services.call_results.llm_schema import CLASSIFIER_VERSION, PLANNER_VERSION, SCHEMA_VERSION, CallResultLLMResult, is_pure_no_answer, is_pure_refusal, legacy_category_from_signals
 from app.services.call_results.idempotency import build_action_idempotency_key
-from app.services.call_results.matcher import CallResultMatcher
+from app.services.call_results.matcher import CallResultMatcher, MatchResult, invalidate_matcher_cache
 from app.services.call_results.payload_builder import BitrixPayloadBuilder
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.phone_normalizer import parse_phone_with_extension
@@ -284,9 +284,9 @@ class CallResultOrchestrator:
                     pass
 
             invalid_phone = not phone_parsed.is_valid
-            match = self.matcher.match_row(
+            match = self._compute_match(
                 phone_parsed.normalized,
-                file_deal_id,
+                file_deal_id=file_deal_id,
                 is_valid_phone=not invalid_phone,
             )
 
@@ -329,16 +329,7 @@ class CallResultOrchestrator:
                 matched_company_id=match.matched_company_id,
                 match_status=match.match_status,
                 match_reason=match.match_reason,
-                candidate_matches=[
-                    {
-                        "deal_id": c.deal_id,
-                        "title": c.title,
-                        "assigned_by_id": c.assigned_by_id,
-                        "assigned_name": c.assigned_name,
-                        "local_id": c.local_id,
-                    }
-                    for c in match.candidates
-                ] or None,
+                candidate_matches=self._match_candidates_json(match),
                 is_duplicate=is_dup,
                 row_hash=dup_hash,
                 deterministic_category=pre.category,
@@ -577,15 +568,18 @@ class CallResultOrchestrator:
 
         row.business_signals = merged.signals.to_dict()
         row.primary_outcome = merged.primary_outcome
+        pure_no = is_pure_no_answer(merged.signals, primary_outcome=merged.primary_outcome)
+        pure_refusal = is_pure_refusal(merged.signals, primary_outcome=merged.primary_outcome)
+        skip_match_manual = (pure_no or pure_refusal) and row.match_status != "not_found"
         row.needs_manual_review = (
             merged.requires_manual
             or merged.signals.needs_manual_review
-            or match_manual
+            or (match_manual and not skip_match_manual)
         )
         row.manual_review_reason = (
             merged.signals.manual_review_reason
             or merged.merge_conflict_reason
-            or (row.match_reason if match_manual else None)
+            or (row.match_reason if match_manual and not skip_match_manual else None)
         )
         row.final_category = merged.final_category
         row.classification_source = merged.classification_source
@@ -621,7 +615,7 @@ class CallResultOrchestrator:
             row.execution_status = "blocked_manual_review"
             return
 
-        if merged.requires_manual or row.is_duplicate or match_manual:
+        if merged.requires_manual or row.is_duplicate or (match_manual and not skip_match_manual):
             if row.is_duplicate:
                 row.skip_reason = "Точный дубликат попытки"
             elif match_manual:
@@ -647,6 +641,18 @@ class CallResultOrchestrator:
             row.execution_status = "prepared"
             return
 
+        self._persist_planned_actions(imp, row, planned, deal_id=deal_id, assigned_by_id=assigned)
+        row.execution_status = "prepared" if not row.needs_manual_review else "blocked_manual_review"
+
+    def _persist_planned_actions(
+        self,
+        imp: CallResultImport,
+        row: CallResultImportRow,
+        planned: list,
+        *,
+        deal_id: int | None,
+        assigned_by_id: int | None,
+    ) -> None:
         group_id = str(uuid.uuid4())
         source_id = row.source_identity or row.row_hash or str(row.id)
         for pa in planned:
@@ -656,7 +662,7 @@ class CallResultOrchestrator:
                     pa,
                     row,
                     bitrix_deal_id=deal_id or 0,
-                    assigned_by_id=assigned,
+                    assigned_by_id=assigned_by_id,
                     service_user_id=self.settings.bitrix_service_user_id,
                     campaign_label=imp.original_filename,
                     deadline=row.callback_at,
@@ -687,7 +693,44 @@ class CallResultOrchestrator:
             )
             self.db.add(action)
 
-        row.execution_status = "prepared" if not row.needs_manual_review else "blocked_manual_review"
+    def persist_manual_create_contact(
+        self,
+        import_id: int,
+        row_id: int,
+        *,
+        contact_data: dict[str, Any] | None = None,
+    ) -> CallResultImportRow | None:
+        imp = self.repo.get_import(import_id)
+        row = self.repo.get_row(import_id, row_id)
+        if imp is None or row is None:
+            return None
+
+        phone = (contact_data or {}).get("phone") or row.normalized_phone or row.raw_phone
+        if not phone:
+            return None
+
+        planned = self.action_planner.plan_manual_create_contact(
+            phone,
+            deal_id=row.matched_deal_id,
+            contact_creation_allowed=self.marker_validator.contact_creation_allowed(),
+            contact_data=contact_data,
+        )
+        if not planned:
+            return None
+
+        self.repo.delete_actions_for_row(row.id, preserve_user_modified=True)
+        self._persist_planned_actions(
+            imp,
+            row,
+            planned,
+            deal_id=row.matched_deal_id,
+            assigned_by_id=None,
+        )
+        row.execution_status = "prepared"
+        row.needs_manual_review = False
+        self._update_import_stats(imp)
+        self.db.commit()
+        return row
 
     def _row_needs_llm_retry(self, row: CallResultImportRow) -> bool:
         if row.llm_status in ("failed", "invalid", "pending", "processing"):
@@ -767,3 +810,84 @@ class CallResultOrchestrator:
         self._update_import_stats(imp)
         self.db.commit()
         return row
+
+    @staticmethod
+    def _match_candidates_json(match: MatchResult) -> list[dict[str, Any]] | None:
+        if not match.candidates:
+            return None
+        return [
+            {
+                "deal_id": c.deal_id,
+                "title": c.title,
+                "assigned_by_id": c.assigned_by_id,
+                "assigned_name": c.assigned_name,
+                "local_id": c.local_id,
+            }
+            for c in match.candidates
+        ]
+
+    def _compute_match(
+        self,
+        normalized_phone: str | None,
+        *,
+        file_deal_id: int | None = None,
+        is_valid_phone: bool = True,
+    ) -> MatchResult:
+        return self.matcher.match_row(
+            normalized_phone,
+            file_deal_id,
+            is_valid_phone=is_valid_phone,
+        )
+
+    def _apply_match_to_row(self, row: CallResultImportRow, match: MatchResult) -> None:
+        row.matched_contact_id = match.matched_contact_id
+        row.matched_deal_id = match.matched_deal_id
+        row.matched_deal_local_id = match.matched_deal_local_id
+        row.matched_company_id = match.matched_company_id
+        row.match_status = match.match_status
+        row.match_reason = match.match_reason
+        row.candidate_matches = self._match_candidates_json(match)
+
+    def rematch_import(
+        self,
+        import_id: int,
+        *,
+        statuses: tuple[str, ...] = ("not_found", "ambiguous", "conflict"),
+    ) -> int:
+        imp = self.repo.get_import(import_id)
+        if imp is None:
+            return 0
+        invalidate_matcher_cache(self.portal_id)
+        self.matcher.build_indexes()
+        updated = 0
+        for row in self.repo.list_rows(import_id):
+            if row.match_status not in statuses or not row.normalized_phone:
+                continue
+            nd = row.normalized_data or {}
+            file_deal_id = None
+            if nd.get("deal_id"):
+                try:
+                    file_deal_id = int(nd["deal_id"])
+                except (TypeError, ValueError):
+                    pass
+            match = self._compute_match(
+                row.normalized_phone,
+                file_deal_id=file_deal_id,
+                is_valid_phone=True,
+            )
+            self._apply_match_to_row(row, match)
+            self._finalize_row(row, imp)
+            updated += 1
+        self._update_import_stats(imp)
+        self.db.commit()
+        return updated
+
+    def rematch_all_imports(
+        self,
+        *,
+        statuses: tuple[str, ...] = ("not_found", "ambiguous", "conflict"),
+    ) -> int:
+        total = 0
+        for imp in self.repo.list_imports(limit=10_000):
+            total += self.rematch_import(imp.id, statuses=statuses)
+        return total

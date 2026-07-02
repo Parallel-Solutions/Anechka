@@ -32,17 +32,29 @@
                 {% endif %}
             </div>
             <div class="mb-3">
-                <label class="form-label">OpenAI API Key</label>
+                <label class="form-label">API-ключ OpenAI</label>
                 <input type="password" class="form-control" name="openai_api_key"
                        placeholder="{{ openai_key_masked or 'sk-...' }}"
                        autocomplete="off">
-                <div class="form-text">Оставьте пустым, чтобы не менять текущий ключ.</div>
+                <div class="form-text">
+                    Оставьте пустым, чтобы не менять текущий ключ.
+                    Ключ можно получить в
+                    <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
+                </div>
                 {% if openai_key_masked %}
                 <div class="form-text fw-semibold">Текущий: {{ openai_key_masked }}</div>
                 {% endif %}
             </div>
             <div class="mb-3">
-                <label class="form-label">Модель OpenAI</label>
+                <label class="form-label">Base URL API</label>
+                <input type="text" class="form-control" name="openai_base_url"
+                       value="{{ settings.openai_base_url }}" placeholder="https://api.openai.com/v1">
+                <div class="form-text">
+                    OpenAI API: <code>https://api.openai.com/v1</code>.
+                </div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">Модель LLM</label>
                 <input type="text" class="form-control" name="openai_model"
                        value="{{ settings.openai_model }}" placeholder="gpt-4o">
             </div>
@@ -80,11 +92,13 @@
                     <input type="text" class="form-control" name="export_dir" value="{{ settings.export_dir }}">
                 </div>
             </div>
-            <div class="mt-4 d-flex gap-2">
+            <div class="mt-4 d-flex gap-2 flex-wrap">
                 <button type="submit" class="btn btn-primary">Сохранить</button>
-                <button type="button" class="btn btn-outline-secondary" id="btn-test-connection">Проверить подключение</button>
+                <button type="button" class="btn btn-outline-secondary" id="btn-test-connection">Проверить Bitrix</button>
+                <button type="button" class="btn btn-outline-secondary" id="btn-test-llm">Проверить LLM</button>
             </div>
             <div id="connection-result" class="mt-3"></div>
+            <div id="llm-result" class="mt-3"></div>
         </form>
     </div>
 </div>

@@ -7,6 +7,7 @@ from typing import Any, Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import Settings
 from app.models import CallContactSearchEntry, CallResultImportRow, utcnow
 
 
@@ -22,15 +23,26 @@ class FakeContactSearchProvider:
 
 
 class ContactSearchGateway:
-    """Gateway for hangup replacement contact search queue.
+    """Gateway for hangup replacement contact search queue."""
 
-    TODO(contact-search): implement real ContactSearchProvider (CrmContactLink / Bitrix API),
-    wire UI confirm button, and export retry queue to Tomoru (sent_to_tomoru).
-    """
-    def __init__(self, db: Session, portal_id: str, provider: ContactSearchProvider | None = None):
+    def __init__(
+        self,
+        db: Session,
+        portal_id: str,
+        provider: ContactSearchProvider | None = None,
+        *,
+        settings: Settings | None = None,
+    ):
         self.db = db
         self.portal_id = portal_id
-        self.provider = provider or FakeContactSearchProvider()
+        if provider is not None:
+            self.provider = provider
+        elif settings is not None:
+            from app.services.call_results.lpr_contact_search_provider import build_contact_search_provider
+
+            self.provider = build_contact_search_provider(db, portal_id, settings)
+        else:
+            self.provider = FakeContactSearchProvider()
 
     def create_from_row(self, row: CallResultImportRow, *, deal_contact_ids: list[int] | None = None) -> CallContactSearchEntry:
         nd = row.normalized_data or {}

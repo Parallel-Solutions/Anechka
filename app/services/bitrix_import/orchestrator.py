@@ -283,7 +283,10 @@ class ImportOrchestrator:
 
                     self.db.commit()
                     self._update_run("contacts")
-                else:
+
+                if etype == ENTITY_DEAL:
+                    self._enrich_company_contacts_for_entities(entities)
+                elif not to_enrich:
                     self._update_run("contacts")
 
                 if page * page_size >= total:
@@ -298,6 +301,26 @@ class ImportOrchestrator:
             ).distinct()
         )
         return set(rows)
+
+    def _enrich_company_contacts_for_entities(self, entities: list) -> None:
+        company_ids: set[int] = set()
+        for entity in entities:
+            company_id = self.enrichment._company_id_from_payload(entity.raw_payload or {})
+            if company_id:
+                company_ids.add(company_id)
+        if not company_ids:
+            return
+        synced = 0
+        for company_id in sorted(company_ids):
+            try:
+                synced += self.enrichment.enrich_company_contacts(company_id)
+            except Exception:
+                logger.exception("Company contact enrichment failed for company %s", company_id)
+                self.stats["failed"] += 1
+        if synced:
+            self.stats["contacts_synced"] += synced
+        self.db.commit()
+        self._update_run("contacts")
 
     @staticmethod
     def _collect_contact_ids_from_links(links_by_id: dict[int, list[dict]]) -> list[int]:

@@ -24,6 +24,7 @@ from app.schemas import (
     ExportDealItem,
     ExportDealsResponse,
     ExportJobResponse,
+    LprConfidenceSummary,
     MessageResponse,
     RegionExportRequest,
     StageExportRequest,
@@ -158,6 +159,9 @@ def download_tomoru_export(body: TomoruExportRequest, db: Session = Depends(get_
 
 
 def _deals_result_to_response(result) -> ExportDealsResponse:
+    lpr_summary = None
+    if result.lpr_summary is not None:
+        lpr_summary = LprConfidenceSummary(**result.lpr_summary)
     return ExportDealsResponse(
         total=result.total,
         deals=[ExportDealItem(**d) for d in result.deals],
@@ -168,6 +172,8 @@ def _deals_result_to_response(result) -> ExportDealsResponse:
         note=result.note,
         matched_total=result.matched_total,
         truncated=result.truncated,
+        lpr_summary=lpr_summary,
+        lpr_view=result.lpr_view,  # type: ignore[arg-type]
     )
 
 
@@ -193,6 +199,8 @@ def tomoru_deals_preview(
     date_to: date | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
     page_size: int = Query(default=50, ge=1, le=200),
+    lpr_view: Literal["all", "uncertain"] = Query(default="all"),
+    confidence_threshold: float = Query(default=70.0, ge=0, le=100),
     db: Session = Depends(get_db),
 ):
     settings = get_app_settings(db)
@@ -205,6 +213,8 @@ def tomoru_deals_preview(
         date_to=date_to,
         offset=offset,
         limit=page_size,
+        lpr_view=lpr_view,
+        confidence_threshold=confidence_threshold,
     )
     return _deals_result_to_response(result)
 

@@ -45,13 +45,6 @@ def intelligent_export_page(request: Request):
 
 def _tomoru_export_page(request: Request, db: Session):
     settings = get_app_settings(db)
-    jobs = (
-        db.query(ExportJob)
-        .filter(ExportJob.mode == "region_lpr")
-        .order_by(ExportJob.created_at.desc())
-        .limit(20)
-        .all()
-    )
     bitrix_ok = False
     if settings.bitrix_webhook_url:
         try:
@@ -64,7 +57,6 @@ def _tomoru_export_page(request: Request, db: Session):
         request,
         "tomoru_export.html",
         {
-            "jobs": jobs,
             "bitrix_connected": bitrix_ok,
             "format_dt": format_local_dt,
             "sync_state": sync_state.to_dict(),

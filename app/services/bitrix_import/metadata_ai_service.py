@@ -6,12 +6,12 @@ import json
 import logging
 from typing import Any
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_metadata_model
 from app.models import CrmFieldDefinition, CrmFieldSemantic
 from app.repositories.crm_repository import CrmRepository
+from app.services.llm_client import make_openai_client
 from app.utils.anonymize import anonymize_string, numeric_stats, string_stats
 from app.utils.hash_utils import source_hash
 
@@ -84,7 +84,7 @@ class BitrixMetadataAIService:
         self.db = db
         self.portal_id = portal_id
         self.repo = CrmRepository(db, portal_id)
-        self.client = OpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
+        self.client = make_openai_client(settings)
         self.model = get_metadata_model(settings)
         self.ai_requests_count = 0
 

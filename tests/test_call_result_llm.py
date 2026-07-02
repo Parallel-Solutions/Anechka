@@ -98,3 +98,84 @@ def test_llm_result_normalizes_empty_signal_reasons():
         }
     )
     assert result.signal_reasons == {"positive": "Запрос КП"}
+
+
+def test_short_phone_treated_as_extension():
+    from app.services.call_results.llm_schema import CallResultLLMResult, EvidenceItem
+
+    llm = CallResultLLMResult.model_validate(
+        {
+            "alternate_contact_requested": True,
+            "alternate_contact": {
+                "name": None,
+                "phone": "+754871",
+                "extension": None,
+                "email": None,
+                "position": None,
+            },
+            "summary": "Другой контакт",
+            "confidence": 0.85,
+            "signal_reasons": {"alternate_contact_requested": "номер ЛПР"},
+            "evidence": [
+                EvidenceItem(source_field="номер ЛПР", text="Позвоните 5 48 71 алло"),
+            ],
+        }
+    )
+    source = {
+        "content_text": "Позвоните 5 48 71 алло",
+        "scenario_events": [
+            {
+                "field": "номер ЛПР",
+                "source_column": "data:номер ЛПР",
+                "match": "+754871",
+                "transcription": "Позвоните 5 48 71 алло",
+            },
+        ],
+    }
+    out = LLMResultValidator().validate(llm, source)
+    assert out.valid
+    assert out.result is not None
+    assert out.result.alternate_contact.phone is None
+    assert out.result.alternate_contact.extension == "754871"
+    assert out.result.needs_manual_review
+    assert any("добавоч" in w.lower() for w in out.warnings)
+
+
+def test_evidence_source_field_matches_tomoru_column():
+    from app.services.call_results.llm_schema import CallResultLLMResult, EvidenceItem
+
+    llm = CallResultLLMResult.model_validate(
+        {
+            "alternate_contact_requested": True,
+            "alternate_contact": {
+                "name": None,
+                "phone": None,
+                "extension": "54871",
+                "email": None,
+                "position": None,
+            },
+            "summary": "Другой контакт",
+            "confidence": 0.85,
+            "signal_reasons": {"alternate_contact_requested": "Вход"},
+            "evidence": [
+                EvidenceItem(
+                    source_field="Вход",
+                    text="Направление архитектуры, разработка генерального плана",
+                ),
+            ],
+        }
+    )
+    source = {
+        "content_text": "Направление архитектуры, разработка генерального плана",
+        "scenario_events": [
+            {
+                "field": "Вход",
+                "source_column": "data:Вход",
+                "match": "Направление архитектуры",
+                "transcription": "Направление архитектуры, разработка генерального плана",
+            },
+        ],
+    }
+    out = LLMResultValidator().validate(llm, source)
+    assert out.valid
+    assert not any("source_field не найден" in w for w in out.warnings)

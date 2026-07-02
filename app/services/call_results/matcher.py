@@ -18,8 +18,9 @@ from app.models import (
     ENTITY_COMPANY,
     ENTITY_DEAL,
 )
+from app.services.export_phone_registry import ExportPhoneRegistry
 from app.services.intelligent_export.contact_phone_heuristic import is_deal_archived
-from app.services.phone_service import extract_phones_from_multifield, normalize_phone
+from app.services.phone_service import extract_phones_from_entity_payload, normalize_phone
 
 
 @dataclass
@@ -48,6 +49,7 @@ class _MatcherIndexes:
     phone_index: dict[str, list[int]]
     company_phone_index: dict[str, int]
     contact_links: dict[int, list[int]]
+    contact_company_ids: dict[int, int]
     deals_by_id: dict[int, CrmEntity]
     users: dict[int, str]
 
@@ -67,9 +69,11 @@ class CallResultMatcher:
     def __init__(self, db: Session, portal_id: str):
         self.db = db
         self.portal_id = portal_id
+        self._export_registry = ExportPhoneRegistry(db)
         self._phone_index: dict[str, list[int]] | None = None
         self._company_phone_index: dict[str, int] | None = None
         self._contact_links: dict[int, list[int]] | None = None
+        self._contact_company_ids: dict[int, int] | None = None
         self._deals_by_id: dict[int, CrmEntity] | None = None
         self._users: dict[int, str] | None = None
 
@@ -86,22 +90,21 @@ class CallResultMatcher:
             select(CrmContactPhone).where(CrmContactPhone.portal_id == self.portal_id)
         )
         for p in phones:
-            norm = normalize_phone(p.value)
-            if norm:
-                self._phone_index.setdefault(norm, []).append(p.contact_id)
+            self._add_contact_phone(p.contact_id, p.value)
 
-        contacts = self.db.scalars(
-            select(CrmContact).where(
-                CrmContact.portal_id == self.portal_id,
-                CrmContact.primary_phone.isnot(None),
+        contacts = list(
+            self.db.scalars(
+                select(CrmContact).where(CrmContact.portal_id == self.portal_id)
             )
         )
+        self._contact_company_ids = {}
         for c in contacts:
-            norm = normalize_phone(c.primary_phone or "")
-            if norm:
-                ids = self._phone_index.setdefault(norm, [])
-                if c.contact_id not in ids:
-                    ids.append(c.contact_id)
+            if c.company_id:
+                self._contact_company_ids[c.contact_id] = int(c.company_id)
+            if c.primary_phone:
+                self._add_contact_phone(c.contact_id, c.primary_phone)
+            for val, _ in extract_phones_from_entity_payload(c.raw_payload or {}):
+                self._add_contact_phone(c.contact_id, val)
 
         self._company_phone_index = {}
         companies = self.db.scalars(
@@ -113,7 +116,7 @@ class CallResultMatcher:
         )
         for co in companies:
             raw = co.raw_payload or {}
-            for val, _ in extract_phones_from_multifield(raw.get("PHONE") or raw.get("phone")):
+            for val, _ in extract_phones_from_entity_payload(raw):
                 norm = normalize_phone(val)
                 if norm:
                     self._company_phone_index[norm] = co.entity_id
@@ -151,6 +154,7 @@ class CallResultMatcher:
         assert self._phone_index is not None
         assert self._company_phone_index is not None
         assert self._contact_links is not None
+        assert self._contact_company_ids is not None
         assert self._deals_by_id is not None
         assert self._users is not None
         _INDEX_CACHE[self.portal_id] = (
@@ -159,15 +163,26 @@ class CallResultMatcher:
                 phone_index=self._phone_index,
                 company_phone_index=self._company_phone_index,
                 contact_links=self._contact_links,
+                contact_company_ids=self._contact_company_ids,
                 deals_by_id=self._deals_by_id,
                 users=self._users,
             ),
         )
 
+    def _add_contact_phone(self, contact_id: int, raw_value: str) -> None:
+        assert self._phone_index is not None
+        norm = normalize_phone(raw_value)
+        if not norm:
+            return
+        ids = self._phone_index.setdefault(norm, [])
+        if contact_id not in ids:
+            ids.append(contact_id)
+
     def _apply_indexes(self, indexes: _MatcherIndexes) -> None:
         self._phone_index = indexes.phone_index
         self._company_phone_index = indexes.company_phone_index
         self._contact_links = indexes.contact_links
+        self._contact_company_ids = indexes.contact_company_ids
         self._deals_by_id = indexes.deals_by_id
         self._users = indexes.users
 
@@ -190,6 +205,8 @@ class CallResultMatcher:
                 match_status="invalid",
                 match_reason="Некорректный телефон",
             )
+
+        normalized_phone = normalize_phone(normalized_phone) or normalized_phone
 
         assert self._deals_by_id is not None
         assert self._phone_index is not None
@@ -225,6 +242,10 @@ class CallResultMatcher:
                 matched_contact_id=contact_ids[0] if contact_ids else None,
             )
 
+        export_match = self._match_by_export_registry(normalized_phone)
+        if export_match is not None:
+            return export_match
+
         if contact_ids:
             return self._match_by_contacts(contact_ids)
 
@@ -234,6 +255,38 @@ class CallResultMatcher:
         return MatchResult(
             match_status="not_found",
             match_reason="Телефон не найден",
+        )
+
+    def _match_by_export_registry(self, normalized_phone: str) -> MatchResult | None:
+        entries = self._export_registry.lookup(self.portal_id, normalized_phone)
+        if not entries:
+            return None
+
+        assert self._deals_by_id is not None
+
+        deal_ids = {entry.deal_id for entry in entries}
+        if len(deal_ids) > 1:
+            deals = [self._deals_by_id[did] for did in deal_ids if did in self._deals_by_id]
+            if len(deals) > 1:
+                chosen = self._pick_deal_by_max_id(deals)
+                contact_id = next(
+                    (e.contact_id for e in entries if e.deal_id == chosen.entity_id),
+                    entries[0].contact_id,
+                )
+                return self._match_from_deals(
+                    deals,
+                    base_reason="Несколько сделок в реестре выгрузки",
+                    matched_contact_id=contact_id,
+                )
+
+        entry = entries[0]
+        deal = self._deals_by_id.get(entry.deal_id)
+        return MatchResult(
+            match_status="matched",
+            match_reason="Сопоставлено по реестру выгрузки",
+            matched_contact_id=entry.contact_id,
+            matched_deal_id=entry.deal_id,
+            matched_deal_local_id=deal.id if deal else None,
         )
 
     def _active_deals(self, deals: list[CrmEntity]) -> list[CrmEntity]:
@@ -253,6 +306,36 @@ class CallResultMatcher:
             for d in deals
         ]
 
+    @staticmethod
+    def _pick_deal_by_max_id(deals: list[CrmEntity]) -> CrmEntity:
+        return max(deals, key=lambda d: d.entity_id)
+
+    def _match_from_deals(
+        self,
+        deals: list[CrmEntity],
+        *,
+        base_reason: str,
+        matched_contact_id: int | None = None,
+        matched_company_id: int | None = None,
+    ) -> MatchResult:
+        chosen = self._pick_deal_by_max_id(deals)
+        return MatchResult(
+            match_status="matched",
+            match_reason=f"{base_reason} — выбрана сделка с наибольшим номером (#{chosen.entity_id})",
+            matched_contact_id=matched_contact_id,
+            matched_deal_id=chosen.entity_id,
+            matched_deal_local_id=chosen.id,
+            matched_company_id=matched_company_id,
+            candidates=self._candidates_from_deals(deals),
+        )
+
+    def _contact_for_deal(self, contact_ids: list[int], deal_id: int) -> int | None:
+        assert self._contact_links is not None
+        for cid in contact_ids:
+            if deal_id in self._contact_links.get(cid, []):
+                return cid
+        return contact_ids[0] if contact_ids else None
+
     def _match_by_contacts(self, contact_ids: list[int]) -> MatchResult:
         assert self._contact_links is not None
         if len(contact_ids) > 1:
@@ -267,10 +350,11 @@ class CallResultMatcher:
                     for eid in all_unique
                     if self._deals_by_id and eid in self._deals_by_id
                 ]
-                return MatchResult(
-                    match_status="ambiguous",
-                    match_reason="Несколько контактов с одним телефоном — разные сделки",
-                    candidates=self._candidates_from_deals(active_deals),
+                chosen = self._pick_deal_by_max_id(active_deals)
+                return self._match_from_deals(
+                    active_deals,
+                    base_reason="Несколько контактов с одним телефоном — разные сделки",
+                    matched_contact_id=self._contact_for_deal(contact_ids, chosen.entity_id),
                 )
 
         all_deals: list[CrmEntity] = []
@@ -292,44 +376,93 @@ class CallResultMatcher:
                 matched_deal_local_id=d.id,
             )
         if len(active) > 1:
-            return MatchResult(
-                match_status="ambiguous",
-                match_reason="Несколько сделок",
-                matched_contact_id=primary_contact,
-                candidates=self._candidates_from_deals(active),
+            return self._match_from_deals(
+                active,
+                base_reason="Несколько сделок",
+                matched_contact_id=primary_contact or contact_ids[0],
             )
+
+        matched_contact_id = primary_contact or (contact_ids[0] if contact_ids else None)
+        unique_all = {d.entity_id: d for d in all_deals}
+        if len(unique_all) == 1:
+            d = next(iter(unique_all.values()))
+            return MatchResult(
+                match_status="matched",
+                match_reason="Сопоставлено по телефону (закрытая сделка)",
+                matched_contact_id=matched_contact_id,
+                matched_deal_id=d.entity_id,
+                matched_deal_local_id=d.id,
+            )
+
+        company_id = self._contact_company_id(contact_ids)
+        if company_id:
+            company_match = self._match_by_company(
+                company_id,
+                matched_contact_id=matched_contact_id,
+            )
+            if company_match.match_status != "not_found":
+                return company_match
+
         return MatchResult(
             match_status="not_found",
             match_reason="Контакт найден, сделка не найдена",
-            matched_contact_id=primary_contact or (contact_ids[0] if contact_ids else None),
+            matched_contact_id=matched_contact_id,
+            matched_company_id=company_id,
         )
 
-    def _match_by_company(self, company_id: int) -> MatchResult:
+    def _contact_company_id(self, contact_ids: list[int]) -> int | None:
+        assert self._contact_company_ids is not None
+        for cid in contact_ids:
+            company_id = self._contact_company_ids.get(cid)
+            if company_id:
+                return company_id
+        return None
+
+    def _match_by_company(
+        self,
+        company_id: int,
+        *,
+        matched_contact_id: int | None = None,
+    ) -> MatchResult:
         assert self._deals_by_id is not None
-        deals = [
-            d
-            for d in self._deals_by_id.values()
-            if self._deal_company_id(d) == company_id and not is_deal_archived(d)
+        all_company_deals = [
+            d for d in self._deals_by_id.values() if self._deal_company_id(d) == company_id
         ]
-        if len(deals) == 1:
-            d = deals[0]
+        active = self._active_deals(all_company_deals)
+        if len(active) == 1:
+            d = active[0]
             return MatchResult(
                 match_status="matched",
                 match_reason="Сопоставлено по телефону компании",
+                matched_contact_id=matched_contact_id,
                 matched_company_id=company_id,
                 matched_deal_id=d.entity_id,
                 matched_deal_local_id=d.id,
             )
-        if len(deals) > 1:
-            return MatchResult(
-                match_status="ambiguous",
-                match_reason="Несколько сделок по компании",
+        if len(active) > 1:
+            return self._match_from_deals(
+                active,
+                base_reason="Несколько сделок по компании",
+                matched_contact_id=matched_contact_id,
                 matched_company_id=company_id,
-                candidates=self._candidates_from_deals(deals),
             )
+
+        archived_unique = {d.entity_id: d for d in all_company_deals if is_deal_archived(d)}
+        if len(archived_unique) == 1:
+            d = next(iter(archived_unique.values()))
+            return MatchResult(
+                match_status="matched",
+                match_reason="Сопоставлено по телефону компании (закрытая сделка)",
+                matched_contact_id=matched_contact_id,
+                matched_company_id=company_id,
+                matched_deal_id=d.entity_id,
+                matched_deal_local_id=d.id,
+            )
+
         return MatchResult(
             match_status="not_found",
             match_reason="Компания найдена, сделка не найдена",
+            matched_contact_id=matched_contact_id,
             matched_company_id=company_id,
         )
 

@@ -46,6 +46,7 @@ class RunResult:
     filepath: Path
     sheet_summaries: dict[str, dict] = field(default_factory=dict)
     total_rows: int = 0
+    tomoru_registry_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 class IntelligentExportRunner:
@@ -118,6 +119,7 @@ class IntelligentExportRunner:
         is_csv = plan.workbook.format == "csv"
         has_explicit_errors_sheet = any(s.mode == "errors" for s in plan.workbook.sheets)
         routed_errors: list[tuple[Sheet, list[dict]]] = []
+        tomoru_registry_rows: list[dict[str, Any]] = []
         for idx, sheet in enumerate(plan.workbook.sheets, 1):
             self._check_cancel()
             if is_csv and sheet.mode in ("parameters", "errors"):
@@ -171,6 +173,14 @@ class IntelligentExportRunner:
                 }
                 summaries[sheet.id] = summary
                 rendered.append(self._render(sheet, out_rows))
+                tomoru_registry_rows.extend(
+                    {
+                        "phone": row["phone"],
+                        "deal_id": row["deal_id"],
+                        "contact_id": row.get("contact_id"),
+                    }
+                    for row in out_rows
+                )
                 total_rows += len(out_rows)
                 self.log(
                     f"Лист «{sheet.name}» (Tomoru): {len(out_rows)} телефонов, "
@@ -229,7 +239,12 @@ class IntelligentExportRunner:
         else:
             write_xlsx(rendered, dest_path)
 
-        return RunResult(filepath=dest_path, sheet_summaries=summaries, total_rows=total_rows)
+        return RunResult(
+            filepath=dest_path,
+            sheet_summaries=summaries,
+            total_rows=total_rows,
+            tomoru_registry_rows=tomoru_registry_rows,
+        )
 
     # --- rendering ----------------------------------------------------------
     def _render(self, sheet: Sheet, rows: list[dict], *, include_errors: bool = False) -> RenderedSheet:

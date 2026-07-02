@@ -211,6 +211,9 @@ def save_lpr_config(
         else:
             db.add(AppSetting(key=key, value=payload))
     db.commit()
+    from app.services.lpr_pick_cache import clear_all
+
+    clear_all(db)
     return LprConfig(keywords=clean_keywords, fields=clean_fields, stopwords=clean_stopwords)
 
 

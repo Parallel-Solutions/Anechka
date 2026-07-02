@@ -17,6 +17,19 @@ from app.utils.portal import portal_id_from_webhook
 
 logger = logging.getLogger(__name__)
 
+_REMATCH_AFTER_IMPORT_MODES = frozenset({"incremental", "full", "contacts_backfill"})
+
+
+def _rematch_call_results_not_found(db, settings, portal_id: str) -> int:
+    from app.dependencies import get_call_result_classifier_instance
+    from app.services.call_results.matcher import invalidate_matcher_cache
+    from app.services.call_results.orchestrator import CallResultOrchestrator
+
+    invalidate_matcher_cache(portal_id)
+    classifier = get_call_result_classifier_instance(settings)
+    orch = CallResultOrchestrator(db, settings, portal_id, classifier)
+    return orch.rematch_all_imports(statuses=("not_found",))
+
 _shutdown = False
 _scheduler = BitrixImportScheduler()
 
@@ -87,6 +100,17 @@ def run_worker() -> None:
                         ai_requests_count=orchestrator.ai_service.ai_requests_count,
                     )
                     sync_repo.complete_run(run.id, "completed")
+                    if run.mode in _REMATCH_AFTER_IMPORT_MODES:
+                        try:
+                            rematched = _rematch_call_results_not_found(db, db_settings, portal_id)
+                            if rematched:
+                                logger.info(
+                                    "Call results rematch after %s import: %s not_found rows updated",
+                                    run.mode,
+                                    rematched,
+                                )
+                        except Exception:
+                            logger.exception("Call results rematch after Bitrix import failed")
                 logger.info("Run %s completed", run.id)
             except Exception as exc:
                 logger.exception("Run %s failed", run.id)

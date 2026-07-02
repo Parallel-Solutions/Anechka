@@ -24,7 +24,7 @@ def run_intelligent_export_job(
     cancel_check: Callable[[], bool],
     progress: Callable[[int, int, str], None],
     log: Callable[[str], None],
-) -> str:
+) -> tuple[str, list[dict[str, Any]]]:
     portal_id = params["portal_id"]
     plan_version_id = int(params["plan_version_id"])
     user_id = int(params["user_id"])
@@ -73,7 +73,7 @@ def run_intelligent_export_job(
             run.finished_at = utcnow()
             db.commit()
 
-    return str(result.filepath)
+    return str(result.filepath), result.tomoru_registry_rows
 
 
 def mark_run_failed(db: Session, run_id: Any, status: str, message: str) -> None:

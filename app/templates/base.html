@@ -13,14 +13,16 @@
         <a class="navbar-brand fw-semibold" href="/">Bitrix24 Export</a>
         <div class="navbar-nav ms-auto">
             <a class="nav-link" href="/tomoru-export">Tomoru</a>
-            <a class="nav-link" href="/exports">История</a>
-            <a class="nav-link" href="/bitrix-import">CRM Импорт</a>
             <a class="nav-link" href="/call-results">Результаты прозвона</a>
             <a class="nav-link" href="/settings">Настройки</a>
         </div>
     </div>
 </nav>
 <main class="{% block main_class %}container pb-5{% endblock %}">
+    {% set p = request.url.path %}
+    {% if p == '/settings' or p.startswith('/exports') or p.startswith('/bitrix-import') %}
+    {% include '_settings_subnav.html' %}
+    {% endif %}
     {% block content %}{% endblock %}
 </main>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>

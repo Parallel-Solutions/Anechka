@@ -58,6 +58,7 @@ from app.models.call_results import (
     CallRetryQueueEntry,
     empty_business_signals,
 )
+from app.models.export_phones import ExportPhoneEntry
 from app.models.legacy import AiPromptTemplate, AppSetting, ExportJob, utcnow
 
 __all__ = [
@@ -106,6 +107,7 @@ __all__ = [
     "ENTITY_DEAL",
     "ENTITY_LEAD",
     "ExportJob",
+    "ExportPhoneEntry",
     "IeConversation",
     "IeExportPlanVersion",
     "IeExportRun",

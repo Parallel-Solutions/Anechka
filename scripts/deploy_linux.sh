@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Deploy bitrix_export_web on Linux (Docker Compose production stack).
+# Run from bitrix_export_web/: bash scripts/deploy_linux.sh
+#
+# One command brings up the full stack: db -> db-restore -> migrate -> web/worker.
+# Seed restore runs only on an empty database (existing pgdata volume is preserved).
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+info()  { echo -e "${GREEN}[OK]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[!!]${NC} $*"; }
+fail()  { echo -e "${RED}[ERR]${NC} $*" >&2; exit 1; }
+
+echo "=== Bitrix Export Web — Linux deploy ==="
+echo "Working directory: $ROOT"
+echo
+
+# 1. Docker
+if ! command -v docker >/dev/null 2>&1; then
+  fail "Docker не установлен. См. DEPLOY_LINUX.md §2: curl -fsSL https://get.docker.com | sh"
+fi
+if ! docker compose version >/dev/null 2>&1; then
+  fail "Docker Compose v2 не найден. Установите Docker Engine с Compose plugin."
+fi
+info "Docker $(docker --version | cut -d' ' -f3 | tr -d ',')"
+info "Compose $(docker compose version --short 2>/dev/null || docker compose version | head -1)"
+
+# 2. Git LFS / seed dump
+if [[ -f database.sql ]]; then
+  size=$(stat -c%s database.sql 2>/dev/null || stat -f%z database.sql 2>/dev/null || echo 0)
+  if [[ "$size" -lt 1000000 ]]; then
+    if head -1 database.sql 2>/dev/null | grep -q 'git-lfs'; then
+      fail "database.sql — указатель Git LFS. Выполните: git lfs pull"
+    fi
+    warn "database.sql меньше 1 MB — возможно, дамп не скачан (git lfs pull)"
+  else
+    info "database.sql найден ($(numfmt --to=iec-i --suffix=B "$size" 2>/dev/null || echo "${size} bytes"))"
+  fi
+else
+  warn "database.sql отсутствует — restore пропустит seed на пустой БД"
+fi
+
+# 3. .env
+if [[ ! -f .env ]]; then
+  cp .env.example .env
+  warn "Создан .env из .env.example — задайте секреты перед production!"
+  warn "  APP_SECRET_KEY, POSTGRES_PASSWORD, BASIC_AUTH_PASSWORD, BOOTSTRAP_ADMIN_PASSWORD"
+else
+  info ".env существует"
+fi
+
+if grep -qE '^(APP_SECRET_KEY|POSTGRES_PASSWORD|BASIC_AUTH_PASSWORD|BOOTSTRAP_ADMIN_PASSWORD)=change-me' .env 2>/dev/null; then
+  warn "В .env остались значения change-me — смените секреты для production"
+fi
+
+# 4. Start stack
+echo
+echo "=== docker compose up --build -d ==="
+docker compose up --build -d
+
+# 5. db-restore verification
+echo
+echo "=== Проверка db-restore ==="
+restore_logs=$(docker compose logs db-restore 2>/dev/null || true)
+if echo "$restore_logs" | grep -q 'RESULT=restored'; then
+  info "db-restore: seed дамп накатан (RESULT=restored)"
+elif echo "$restore_logs" | grep -q 'RESULT=skipped'; then
+  info "db-restore: restore пропущен — база уже содержит данные или seed отсутствует"
+elif echo "$restore_logs" | grep -q 'restore complete'; then
+  info "db-restore: seed дамп накатан"
+elif echo "$restore_logs" | grep -q 'skipping restore\|seed file not found'; then
+  info "db-restore: restore пропущен"
+else
+  fail "db-restore: не удалось определить результат. Логи: docker compose logs db-restore"
+fi
+
+# 6. migrate verification
+echo
+echo "=== Проверка migrate ==="
+migrate_status=$(docker compose ps -a migrate --format '{{.State}}' 2>/dev/null | head -1 || true)
+if [[ "$migrate_status" != "exited" ]]; then
+  fail "migrate: контейнер не завершился (state=$migrate_status). Логи: docker compose logs migrate"
+fi
+migrate_exit=$(docker compose ps -a migrate --format '{{.ExitCode}}' 2>/dev/null | head -1 || true)
+if [[ "$migrate_exit" != "0" ]]; then
+  fail "migrate: exit code $migrate_exit. Логи: docker compose logs migrate"
+fi
+info "migrate: alembic upgrade head завершён успешно"
+
+# 7. Health check
+echo
+echo "=== Ожидание /health ==="
+for i in $(seq 1 30); do
+  if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
+    body=$(curl -s http://localhost:8000/health)
+    info "Health: $body"
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    fail "Health check не прошёл за 30 попыток. Логи: docker compose logs web"
+  fi
+  sleep 2
+done
+
+# 8. DB sanity check
+echo
+echo "=== Проверка данных в БД ==="
+crm_count=$(docker compose exec -T web python -c "
+from sqlalchemy import create_engine, text
+import os
+engine = create_engine(os.environ['DATABASE_URL'])
+with engine.connect() as conn:
+    print(conn.execute(text('SELECT count(*) FROM crm_entities')).scalar())
+" 2>/dev/null | tr -d '[:space:]' || echo "0")
+if [[ "$crm_count" =~ ^[0-9]+$ ]] && [[ "$crm_count" -gt 0 ]]; then
+  info "crm_entities: $crm_count записей"
+else
+  warn "crm_entities пуста или недоступна (count=$crm_count) — проверьте seed/import"
+fi
+
+echo
+docker compose ps
+echo
+info "Приложение: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):8000"
+info "Логин: значения BASIC_AUTH_USERNAME / BASIC_AUTH_PASSWORD из .env"
+echo
+warn "Следующий шаг: откройте /settings и укажите BITRIX_WEBHOOK_URL, затем /bitrix-import при необходимости."

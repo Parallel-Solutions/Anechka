@@ -23,11 +23,22 @@ from app.services.export_plan.payload_keys import payload_lookup
 from app.services.lpr_tomoru_service import _date_range_bounds
 from app.services.intelligent_export.contact_lpr_classifier import build_lpr_classifier
 from app.services.intelligent_export.contact_phone_heuristic import (
+    CONFIDENCE_MANUAL,
+    CONFIDENCE_SINGLE,
     _deal_company_id,
+    _deal_only_contacts,
     collect_deal_contacts,
     filter_non_archived_deals,
     pick_company_phone,
     pick_contact_for_deal,
+)
+from app.services.lpr_pick_cache import (
+    CachedLprPick,
+    compute_input_hash,
+    get_cached,
+    load_all,
+    save_all,
+    set_cached,
 )
 from app.services.lpr_service import LprConfig, load_lpr_config
 from app.services.tomoru_contact_preferences import load_all as load_tomoru_contact_overrides
@@ -65,6 +76,8 @@ class ExportDealsResult:
     note: str | None = None
     matched_total: int | None = None
     truncated: bool = False
+    lpr_summary: dict[str, Any] | None = None
+    lpr_view: str = "all"
 
 
 def _contact_to_preview(
@@ -76,6 +89,7 @@ def _contact_to_preview(
     *,
     selected_for_export: bool = False,
     selection_reason: str | None = None,
+    selection_confidence: float | None = None,
 ) -> dict[str, Any]:
     raw = contact.raw_payload or {}
     description = str(payload_lookup(raw, "COMMENTS") or "").strip() or None
@@ -95,6 +109,7 @@ def _contact_to_preview(
         "is_primary": bool(link.is_primary) if link is not None else False,
         "selected_for_export": selected_for_export,
         "selection_reason": selection_reason,
+        "selection_confidence": selection_confidence,
         "bitrix_url": bitrix_contact_url(portal_id, int(contact.contact_id)),
     }
 
@@ -134,6 +149,8 @@ def _contacts_for_deal(
     settings: Settings | None = None,
     lpr_config: LprConfig | None = None,
     saved_selection: list[int] | None = None,
+    lpr_pick_cache: dict[int, CachedLprPick] | None = None,
+    cache_dirty: list[bool] | None = None,
 ) -> list[dict[str, Any]]:
     contact_repo = ContactRepository(db, portal_id)
     candidates = collect_deal_contacts(
@@ -144,6 +161,7 @@ def _contacts_for_deal(
     )
     chosen_id: int | None = None
     selection_reason: str | None = None
+    selection_confidence: float | None = None
     if saved_selection is not None:
         saved_ids = set(saved_selection)
         return [
@@ -155,19 +173,59 @@ def _contacts_for_deal(
                 contact_repo,
                 selected_for_export=c.contact_id in saved_ids,
                 selection_reason=SAVED_SELECTION_REASON if c.contact_id in saved_ids else None,
+                selection_confidence=CONFIDENCE_MANUAL if c.contact_id in saved_ids else None,
             )
             for c in candidates
         ]
     if settings is not None and lpr_config is not None and candidates:
-        classifier = build_lpr_classifier(settings, lpr_config, use_llm=False)
-        chosen, selection_reason = pick_contact_for_deal(
-            candidates,
-            lpr_config=lpr_config,
-            classifier=classifier,
-            deal_title=entity.title or "",
-        )
-        if chosen is not None:
-            chosen_id = chosen.contact_id
+        deal_title = entity.title or ""
+        input_hash = compute_input_hash(deal_title, candidates, lpr_config)
+        deal_id = int(entity.entity_id)
+        cached: CachedLprPick | None = None
+        if lpr_pick_cache is not None:
+            cached = get_cached(lpr_pick_cache, deal_id, input_hash)
+        if cached is not None:
+            chosen_id = cached.contact_id
+            selection_reason = cached.reason
+            selection_confidence = cached.confidence
+        else:
+            classifier = build_lpr_classifier(
+                settings,
+                lpr_config,
+                use_llm=bool(settings.openai_api_key),
+            )
+            chosen, selection_reason, selection_confidence = pick_contact_for_deal(
+                candidates,
+                lpr_config=lpr_config,
+                classifier=classifier,
+                deal_title=deal_title,
+            )
+            if chosen is not None:
+                chosen_id = chosen.contact_id
+            if (
+                lpr_pick_cache is not None
+                and chosen_id is not None
+                and selection_reason is not None
+                and selection_confidence is not None
+            ):
+                set_cached(
+                    lpr_pick_cache,
+                    deal_id,
+                    input_hash=input_hash,
+                    contact_id=chosen_id,
+                    reason=selection_reason,
+                    confidence=selection_confidence,
+                )
+                if cache_dirty is not None:
+                    cache_dirty[0] = True
+
+        deal_contacts = _deal_only_contacts(candidates)
+        if (
+            len(deal_contacts) == 1
+            and chosen_id is not None
+            and chosen_id == deal_contacts[0].contact_id
+        ):
+            selection_confidence = CONFIDENCE_SINGLE
 
     return [
         _contact_to_preview(
@@ -178,9 +236,53 @@ def _contacts_for_deal(
             contact_repo,
             selected_for_export=chosen_id is not None and c.contact_id == chosen_id,
             selection_reason=selection_reason if chosen_id is not None and c.contact_id == chosen_id else None,
+            selection_confidence=(
+                selection_confidence if chosen_id is not None and c.contact_id == chosen_id else None
+            ),
         )
         for c in candidates
     ]
+
+
+def _deal_lpr_confidence(contacts: list[dict[str, Any]] | None) -> float | None:
+    if not contacts:
+        return None
+    for c in contacts:
+        if c.get("selected_for_export"):
+            return c.get("selection_confidence")
+    return None
+
+
+def _is_uncertain_deal(confidence: float | None, threshold: float) -> bool:
+    if confidence is None:
+        return True
+    return confidence < threshold
+
+
+def _compute_lpr_summary(deals: list[dict[str, Any]], threshold: float) -> dict[str, Any]:
+    deals_total = len(deals)
+    if deals_total == 0:
+        return {
+            "threshold": threshold,
+            "deals_total": 0,
+            "confident_count": 0,
+            "confident_percent": 0.0,
+            "uncertain_count": 0,
+        }
+    confident_count = sum(
+        1
+        for deal in deals
+        if (conf := deal.get("lpr_confidence")) is not None and conf >= threshold
+    )
+    uncertain_count = deals_total - confident_count
+    confident_percent = round(confident_count / deals_total * 100, 1)
+    return {
+        "threshold": threshold,
+        "deals_total": deals_total,
+        "confident_count": confident_count,
+        "confident_percent": confident_percent,
+        "uncertain_count": uncertain_count,
+    }
 
 
 def _entity_to_deal(
@@ -209,6 +311,7 @@ def _entity_to_deal(
     if contacts is not None:
         deal["contacts"] = contacts
         deal["company"] = company
+        deal["lpr_confidence"] = _deal_lpr_confidence(contacts)
     return deal
 
 
@@ -465,6 +568,8 @@ class ExportDealsService:
         date_to: date | None = None,
         offset: int = 0,
         limit: int = 50,
+        lpr_view: str = "all",
+        confidence_threshold: float = 70.0,
     ) -> ExportDealsResult:
         params: dict[str, Any] = {
             "entity_type": entity_type,
@@ -482,7 +587,15 @@ class ExportDealsService:
             params["date_from"] = date_from.isoformat()
         if date_to is not None:
             params["date_to"] = date_to.isoformat()
-        return self._filter_legacy_crm("region_lpr", params, offset=offset, limit=limit, include_contacts=True)
+        return self._filter_legacy_crm(
+            "region_lpr",
+            params,
+            offset=offset,
+            limit=limit,
+            include_contacts=True,
+            lpr_view=lpr_view,
+            confidence_threshold=confidence_threshold,
+        )
 
     def _filter_legacy_crm(
         self,
@@ -492,6 +605,8 @@ class ExportDealsService:
         offset: int,
         limit: int,
         include_contacts: bool = False,
+        lpr_view: str = "all",
+        confidence_threshold: float = 70.0,
     ) -> ExportDealsResult:
         entity_type = params.get("entity_type", "deal")
         if entity_type == "lead":
@@ -546,18 +661,20 @@ class ExportDealsService:
             entities,
             category_id=category_id,
         )
-        page_entities = entities[offset : offset + limit]
         lpr_config = load_lpr_config(self.db) if include_contacts else None
         saved_overrides = (
             load_tomoru_contact_overrides(self.db, self.portal_id) if include_contacts else {}
         )
-        page: list[dict[str, Any]] = []
+        lpr_pick_cache = load_all(self.db, self.portal_id) if include_contacts else {}
+        cache_dirty = [False]
         stage_names = build_stage_names_map(
             self.db,
             self.portal_id,
             category_id=category_id,
         )
-        for entity in page_entities:
+        build_entities = entities if include_contacts else entities[offset : offset + limit]
+        all_deals: list[dict[str, Any]] = []
+        for entity in build_entities:
             deal_id = int(entity.entity_id)
             saved_selection = (
                 saved_overrides[deal_id] if deal_id in saved_overrides else None
@@ -570,6 +687,8 @@ class ExportDealsService:
                     settings=self.settings,
                     lpr_config=lpr_config,
                     saved_selection=saved_selection,
+                    lpr_pick_cache=lpr_pick_cache,
+                    cache_dirty=cache_dirty,
                 )
                 if include_contacts
                 else None
@@ -594,22 +713,50 @@ class ExportDealsService:
                 stage_names=stage_names,
             )
             if deal is not None:
-                page.append(deal)
+                all_deals.append(deal)
+        if include_contacts and cache_dirty[0]:
+            save_all(self.db, self.portal_id, lpr_pick_cache)
         note = FILTER_NOTE
         if include_contacts:
             note = f"{FILTER_NOTE} {TOMORU_CONTACTS_NOTE}"
         if truncated:
             note = f"{TRUNCATION_NOTE_TEMPLATE.format(matched_total=matched_total, export_limit=export_limit)} {note}"
+
+        lpr_summary: dict[str, Any] | None = None
+        page: list[dict[str, Any]]
+        result_offset = offset
+        result_limit = limit
+        result_total = len(entities)
+
+        if include_contacts:
+            threshold = max(0.0, min(100.0, confidence_threshold))
+            lpr_summary = _compute_lpr_summary(all_deals, threshold)
+            if lpr_view == "uncertain":
+                page = [
+                    d
+                    for d in all_deals
+                    if _is_uncertain_deal(d.get("lpr_confidence"), threshold)
+                ]
+                result_total = len(page)
+                result_offset = 0
+                result_limit = max(result_total, 1)
+            else:
+                page = all_deals[offset : offset + limit]
+        else:
+            page = all_deals
+
         return ExportDealsResult(
-            total=len(entities),
+            total=result_total,
             deals=page,
             available=True,
             source="filter",
-            offset=offset,
-            limit=limit,
+            offset=result_offset,
+            limit=result_limit,
             note=note,
             matched_total=matched_total,
             truncated=truncated,
+            lpr_summary=lpr_summary,
+            lpr_view=lpr_view if include_contacts else "all",
         )
 
     def _filter_category_full(
