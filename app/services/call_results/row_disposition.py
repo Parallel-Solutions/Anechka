@@ -92,3 +92,24 @@ def get_row_disposition(
     if row_matches_auto_call(row, actions):
         return "auto_call"
     return None
+
+
+def _has_timeline_comment_action(actions: list[BitrixPreparedAction | dict[str, Any]]) -> bool:
+    for action in _enabled_actions(actions):
+        method = action.method if hasattr(action, "method") else action.get("method")
+        if method == "crm.timeline.comment.add":
+            return True
+    return False
+
+
+def should_plan_outcome_comment(
+    row: CallResultImportRow,
+    actions: list[BitrixPreparedAction | dict[str, Any]],
+) -> bool:
+    if not row.matched_deal_id:
+        return False
+    if get_row_disposition(row, actions) == "auto_call":
+        return False
+    if _has_timeline_comment_action(actions):
+        return False
+    return True

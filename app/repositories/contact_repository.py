@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from sqlalchemy import select
@@ -193,6 +194,30 @@ class ContactRepository:
         ).all()
         return [{"link": link, "contact": contact} for link, contact in rows]
 
+    def get_contacts_for_parents(
+        self, parent_entity_type_id: int, parent_entity_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        if not parent_entity_ids:
+            return {}
+        rows = self.db.execute(
+            select(CrmContactLink, CrmContact)
+            .join(
+                CrmContact,
+                (CrmContact.portal_id == CrmContactLink.portal_id)
+                & (CrmContact.contact_id == CrmContactLink.contact_id),
+            )
+            .where(
+                CrmContactLink.portal_id == self.portal_id,
+                CrmContactLink.parent_entity_type_id == parent_entity_type_id,
+                CrmContactLink.parent_entity_id.in_(parent_entity_ids),
+            )
+            .order_by(CrmContactLink.is_primary.desc(), CrmContact.full_name)
+        ).all()
+        out: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for link, contact in rows:
+            out[int(link.parent_entity_id)].append({"link": link, "contact": contact})
+        return dict(out)
+
     def get_links_for_contact(self, contact_id: int) -> list[dict[str, Any]]:
         """Сделки и лиды, к которым привязан контакт. Каждый элемент: {link, parent}."""
         rows = self.db.execute(
@@ -226,6 +251,23 @@ class ContactRepository:
             )
         )
 
+    def get_contacts_by_company_ids(
+        self, company_ids: list[int]
+    ) -> dict[int, list[CrmContact]]:
+        if not company_ids:
+            return {}
+        rows = self.db.scalars(
+            select(CrmContact).where(
+                CrmContact.portal_id == self.portal_id,
+                CrmContact.company_id.in_(company_ids),
+            )
+        ).all()
+        out: dict[int, list[CrmContact]] = defaultdict(list)
+        for contact in rows:
+            if contact.company_id is not None:
+                out[int(contact.company_id)].append(contact)
+        return dict(out)
+
     def get_contact(self, contact_id: int) -> CrmContact | None:
         return self.db.scalar(
             select(CrmContact).where(
@@ -233,6 +275,17 @@ class ContactRepository:
                 CrmContact.contact_id == contact_id,
             )
         )
+
+    def get_contacts(self, contact_ids: list[int]) -> dict[int, CrmContact]:
+        if not contact_ids:
+            return {}
+        rows = self.db.scalars(
+            select(CrmContact).where(
+                CrmContact.portal_id == self.portal_id,
+                CrmContact.contact_id.in_(contact_ids),
+            )
+        ).all()
+        return {int(row.contact_id): row for row in rows}
 
     def get_phones_for_contact(self, contact_id: int) -> list[dict[str, str]]:
         """Phones from crm_contact_phones, fallback to raw_payload PHONE multifield."""
@@ -253,3 +306,36 @@ class ContactRepository:
 
         raw = (contact.raw_payload or {}).get("PHONE") or (contact.raw_payload or {}).get("phone")
         return parse_phones(raw)
+
+    def get_phones_for_contacts(
+        self, contact_ids: list[int]
+    ) -> dict[int, list[dict[str, str]]]:
+        if not contact_ids:
+            return {}
+        rows = list(
+            self.db.scalars(
+                select(CrmContactPhone).where(
+                    CrmContactPhone.portal_id == self.portal_id,
+                    CrmContactPhone.contact_id.in_(contact_ids),
+                )
+            )
+        )
+        out: dict[int, list[dict[str, str]]] = defaultdict(list)
+        for phone in rows:
+            out[int(phone.contact_id)].append(
+                {"value": phone.value, "value_type": phone.value_type}
+            )
+        missing = [cid for cid in contact_ids if cid not in out]
+        if not missing:
+            return dict(out)
+        contacts = self.get_contacts(missing)
+        from app.services.bitrix_import.contact_parser import parse_phones
+
+        for contact_id, contact in contacts.items():
+            raw = (contact.raw_payload or {}).get("PHONE") or (
+                contact.raw_payload or {}
+            ).get("phone")
+            parsed = parse_phones(raw)
+            if parsed:
+                out[contact_id] = parsed
+        return dict(out)

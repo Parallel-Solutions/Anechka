@@ -6,6 +6,7 @@ from app.services.call_results.row_disposition import (
     is_manual_review_row,
     row_matches_auto_call,
     row_matches_manual_call,
+    should_plan_outcome_comment,
 )
 
 
@@ -115,3 +116,37 @@ def test_dispositions_are_mutually_exclusive():
             get_row_disposition(row, actions) == "auto_call",
         ]
         assert sum(flags) <= 1
+
+
+def test_should_plan_outcome_comment_for_manual_call():
+    row = _row(business_signals={"callback_later_requested": True})
+    actions = [_action("retry_queue.add", reason="callback_later")]
+    assert should_plan_outcome_comment(row, actions)
+
+
+def test_should_not_plan_outcome_comment_for_auto_call():
+    row = _row(primary_outcome="no_answer", business_signals={"no_answer": True})
+    actions = [_action("retry_queue.add", reason="no_answer")]
+    assert not should_plan_outcome_comment(row, actions)
+
+
+def test_should_not_plan_outcome_comment_without_deal():
+    row = _row(
+        match_status="not_found",
+        matched_deal_id=None,
+        primary_outcome="refusal",
+        business_signals={"explicit_refusal": True},
+    )
+    assert not should_plan_outcome_comment(row, [])
+
+
+def test_should_not_plan_outcome_comment_when_already_present():
+    row = _row(primary_outcome="refusal", business_signals={"explicit_refusal": True})
+    actions = [_action("crm.timeline.comment.add")]
+    assert not should_plan_outcome_comment(row, actions)
+
+
+def test_should_plan_outcome_comment_for_manual_review_positive():
+    row = _row(primary_outcome="positive", business_signals={"positive": True})
+    actions = [_action("crm.activity.todo.add")]
+    assert should_plan_outcome_comment(row, actions)

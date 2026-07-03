@@ -10,6 +10,30 @@ from app.models import CallResultImportRow
 from app.services.call_results.action_planner import PlannedAction
 
 
+COMMENT_CATEGORY_LABELS: dict[str, str] = {
+    "refusal": "Отказ",
+    "positive": "Положительный результат",
+    "callback_later": "Запрос перезвона",
+    "hangup": "Сброс / нет результата",
+}
+
+
+def comment_category_label(row: CallResultImportRow) -> str:
+    outcome = row.primary_outcome or ""
+    if outcome in COMMENT_CATEGORY_LABELS:
+        return COMMENT_CATEGORY_LABELS[outcome]
+    sig = row.business_signals or {}
+    if sig.get("explicit_refusal"):
+        return COMMENT_CATEGORY_LABELS["refusal"]
+    if sig.get("positive"):
+        return COMMENT_CATEGORY_LABELS["positive"]
+    if sig.get("callback_later_requested"):
+        return COMMENT_CATEGORY_LABELS["callback_later"]
+    if sig.get("hangup_without_result"):
+        return COMMENT_CATEGORY_LABELS["hangup"]
+    return "Результат обзвона"
+
+
 def parse_positive_deadline(settings: Settings) -> timedelta:
     raw = getattr(settings, "positive_activity_default_deadline", "24h") or "24h"
     raw = str(raw).strip().lower()
@@ -69,10 +93,11 @@ class BitrixPayloadBuilder:
         if override:
             comment = override
         else:
+            category = comment_category_label(row)
             lines = [
                 "Результат автоматического обзвона",
                 "",
-                "Категория: Отказ",
+                f"Категория: {category}",
             ]
             if row.called_at:
                 lines.append(f"Дата звонка: {row.called_at.isoformat()}")
@@ -81,8 +106,11 @@ class BitrixPayloadBuilder:
             contact = ext.get("contact_name") or row.normalized_data.get("contact_name")
             if contact:
                 lines.append(f"Контакт: {contact}")
+            cb = row.callback_at or sig.get("callback_at")
+            if cb and category == COMMENT_CATEGORY_LABELS["callback_later"]:
+                lines.append(f"Запрошенный перезвон: {cb}")
             reason = sig.get("refusal_reason") or ext.get("refusal_reason")
-            if reason:
+            if reason and category == COMMENT_CATEGORY_LABELS["refusal"]:
                 lines.append(f"Причина отказа: {reason}")
             summary = sig.get("summary") or ext.get("summary") or row.comment
             if summary:

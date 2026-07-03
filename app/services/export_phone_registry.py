@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ExportPhoneEntry
+from app.models import ExportJob, ExportPhoneEntry
 from app.services.phone_service import normalize_phone, phone_hash
 
 
@@ -17,6 +19,19 @@ class ExportPhoneRow:
     phone: str
     deal_id: int
     contact_id: int | None = None
+
+
+@dataclass
+class ExportPhoneHistoryItem:
+    export_job_id: int
+    export_mode: str
+    job_mode: str
+    status: str
+    created_at: datetime
+    finished_at: datetime | None
+    deal_id: int
+    contact_id: int | None
+    parameters: dict[str, Any]
 
 
 class _LprReportRowLike(Protocol):
@@ -132,3 +147,46 @@ class ExportPhoneRegistry:
                 )
             )
         return []
+
+    def lookup_export_history(
+        self,
+        portal_id: str,
+        phone: str,
+    ) -> tuple[str | None, list[ExportPhoneHistoryItem]]:
+        canonical = normalize_phone(phone)
+        if not canonical:
+            return None, []
+
+        entries = self.lookup(portal_id, canonical)
+        if not entries:
+            return canonical, []
+
+        job_ids = {entry.export_job_id for entry in entries}
+        jobs = {
+            job.id: job
+            for job in self.db.scalars(select(ExportJob).where(ExportJob.id.in_(job_ids)))
+        }
+
+        items: list[ExportPhoneHistoryItem] = []
+        for entry in entries:
+            job = jobs.get(entry.export_job_id)
+            if not job:
+                continue
+            try:
+                parameters = json.loads(job.parameters_json or "{}")
+            except json.JSONDecodeError:
+                parameters = {}
+            items.append(
+                ExportPhoneHistoryItem(
+                    export_job_id=entry.export_job_id,
+                    export_mode=entry.export_mode,
+                    job_mode=job.mode,
+                    status=job.status,
+                    created_at=job.created_at,
+                    finished_at=job.finished_at,
+                    deal_id=entry.deal_id,
+                    contact_id=entry.contact_id,
+                    parameters=parameters,
+                )
+            )
+        return canonical, items

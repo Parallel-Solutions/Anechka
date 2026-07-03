@@ -68,6 +68,7 @@
         comment: 'new_comments',
         todo: 'new_todos',
         create_contact: 'new_contacts',
+        find_contact: 'auto_call',
     };
 
     const SEND_SUCCESS_MESSAGES = {
@@ -108,6 +109,7 @@
     let lastRowViewWheelNavAt = 0;
     let importPollTimer = null;
     let lastStatusSignature = null;
+    let currentImportStatus = null;
 
     function statusSignature(data) {
         const s = data.summary || {};
@@ -156,6 +158,7 @@
                     importSummaryCache = statusData.summary;
                     renderSummaryFilters(statusData.summary, activeFilterId);
                     renderFilteredList(activeFilterId, importId, true);
+                    updateSendAndExportButton();
                 } else {
                     await loadImportDetail(importId, { reloadQueues: false });
                 }
@@ -407,9 +410,13 @@
                 executeFilteredSend(currentImportId, filterSendState.rowIds);
             }
         });
+        document.getElementById('btn-send-and-export')?.addEventListener('click', () => {
+            if (currentImportId) runSendAndExport(currentImportId);
+        });
     }
 
     function applyImportMeta(data) {
+        currentImportStatus = data.status ?? currentImportStatus;
         const meta = document.getElementById('import-meta');
         if (meta && data.original_filename) {
             meta.textContent = data.original_filename;
@@ -446,6 +453,7 @@
         renderFilteredList(activeFilterId, importId);
         showLlmFailedAlert(importSummaryCache);
         lastStatusSignature = statusSignature(data);
+        updateSendAndExportButton();
     }
 
     function sleep(ms) {
@@ -486,6 +494,7 @@
                 importSummaryCache = statusData.summary;
                 renderSummaryFilters(statusData.summary, activeFilterId);
                 renderFilteredList(activeFilterId, importId, true);
+                updateSendAndExportButton();
                 scheduleImportPoll(importId, statusData);
                 return;
             }
@@ -541,31 +550,13 @@
         return action && action.is_enabled !== false;
     }
 
-    function rowMatchesFilter(row, filterId, ctx) {
-        const actions = getRowActions(row, ctx);
-        const enabledActions = actions.filter(isEnabledAction);
-
-        switch (filterId) {
-        case 'all':
-            return true;
-        case 'manual_review':
-        case 'manual_call':
-        case 'auto_call':
-            return row.ui_disposition === filterId;
-        case 'new_contacts':
-            return enabledActions.some((a) => a.method === 'crm.contact.add');
-        case 'new_todos':
-            return enabledActions.some((a) => a.method === 'crm.activity.todo.add');
-        case 'new_comments':
-            return enabledActions.some((a) => a.method === 'crm.timeline.comment.add');
-        default:
-            return false;
-        }
+    function rowMatchesFilter(row, filterId) {
+        if (filterId === 'all') return true;
+        return row.row_filter === filterId;
     }
 
     function getFilteredRows(filterId) {
-        const ctx = getFilterContext();
-        return importRowsCache.filter((row) => rowMatchesFilter(row, filterId, ctx));
+        return importRowsCache.filter((row) => rowMatchesFilter(row, filterId));
     }
 
     function getFilterHeaderAction(filterId) {
@@ -585,7 +576,7 @@
         const seen = new Set();
         const phones = [];
         rows.forEach((row) => {
-            const phone = row.normalized_phone || row.raw_phone;
+            const phone = row.dial_phone || row.normalized_phone || row.raw_phone;
             if (!phone || seen.has(phone)) return;
             seen.add(phone);
             phones.push(String(phone));
@@ -608,6 +599,86 @@
         const phones = collectFilteredPhones(getFilteredRows(filterId));
         if (!phones.length) return;
         downloadTomoruPhonesCsv(phones, `${filterId}_${importId}.csv`);
+    }
+
+    const BITRIX_SEND_FILTERS = ['new_comments', 'new_contacts', 'new_todos'];
+
+    function collectBitrixSendRowIds() {
+        const seen = new Set();
+        const ids = [];
+        BITRIX_SEND_FILTERS.forEach((filterId) => {
+            getFilteredRows(filterId).forEach((row) => {
+                if (seen.has(row.id)) return;
+                seen.add(row.id);
+                ids.push(row.id);
+            });
+        });
+        return ids;
+    }
+
+    function updateSendAndExportButton() {
+        const btn = document.getElementById('btn-send-and-export');
+        if (!btn) return;
+        const processing = currentImportStatus === 'processing' || currentImportStatus === 'uploaded';
+        const executing = importSummaryCache?.execute_status === 'executing';
+        const sendCount = collectBitrixSendRowIds().length;
+        const autoCount = collectFilteredPhones(getFilteredRows('auto_call')).length;
+        btn.disabled = processing || executing || (sendCount === 0 && autoCount === 0);
+    }
+
+    async function runSendAndExport(importId) {
+        const alertEl = document.getElementById('import-alert');
+        const btn = document.getElementById('btn-send-and-export');
+        const sendRowIds = collectBitrixSendRowIds();
+        const autoPhones = collectFilteredPhones(getFilteredRows('auto_call'));
+        const messages = [];
+        let sendStarted = false;
+
+        try {
+            if (btn) btn.disabled = true;
+
+            if (sendRowIds.length > 0) {
+                if (!diagnosticsCache) await loadDiagnosticsCache();
+                if (!diagnosticsCache?.execution_enabled) {
+                    messages.push(
+                        'Отправка в Bitrix24 пропущена: выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).',
+                    );
+                } else {
+                    const resp = await fetch(`/api/call-results/imports/${importId}/execute`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ confirmation_token: 'EXECUTE', row_ids: sendRowIds }),
+                    });
+                    const data = await resp.json().catch(() => ({}));
+                    if (!resp.ok) throw new Error(data.detail || 'Execute недоступен');
+                    messages.push(data.message || `Отправка в Bitrix24 запущена (${sendRowIds.length} строк).`);
+                    sendStarted = true;
+                }
+            }
+
+            if (autoPhones.length > 0) {
+                exportFilteredList('auto_call', importId);
+                messages.push(`Скачан список автобзвона: ${autoPhones.length} телефонов.`);
+            }
+
+            if (!messages.length) {
+                showAlert(alertEl, 'Нечего отправлять или выгружать.', 'warning');
+                updateSendAndExportButton();
+                return;
+            }
+
+            const hasSendSkip = sendRowIds.length > 0 && !sendStarted;
+            showAlert(alertEl, messages.join(' '), hasSendSkip ? 'warning' : 'success');
+
+            if (sendStarted) {
+                loadImport(importId, { fullReload: true });
+            } else {
+                updateSendAndExportButton();
+            }
+        } catch (e) {
+            showAlert(alertEl, e.message, 'danger');
+            updateSendAndExportButton();
+        }
     }
 
     function getSendPreviewActions(row, filterId) {
@@ -633,7 +704,7 @@
                 <div class="card mb-2 filter-send-row">
                     <div class="card-header py-2 small">
                         <strong>Строка ${row.source_row_number}</strong>
-                        <span class="text-muted ms-2">${escapeHtml(row.raw_phone || '—')}</span>
+                        <span class="text-muted ms-2">${renderPhoneLink(row.raw_phone)}</span>
                         <span class="text-muted ms-2">${renderDealCell(row)}</span>
                     </div>
                     <div class="card-body py-2 filter-send-preview">${actionsHtml}</div>
@@ -885,7 +956,7 @@
                     </tr></thead>
                     <tbody>${rows.map((r) => `<tr data-row-id="${r.id}"${r.id === currentViewRowId ? ' class="table-active"' : ''}>
                         <td>${r.source_row_number}</td>
-                        <td>${escapeHtml(r.raw_phone || '')}</td>
+                        <td>${renderPhoneLink(r.raw_phone)}</td>
                         <td class="text-truncate" style="max-width:180px" title="${escapeHtml(getDealTitle(r))}">${renderDealCell(r)}</td>
                         <td>${signalBadges(r.business_signals, r)}</td>
                         <td><button type="button" class="btn btn-sm btn-primary btn-view-row" data-row-id="${r.id}">Просмотреть</button></td>
@@ -929,11 +1000,30 @@
         </div>`;
     }
 
+    function formatCalledAt(value) {
+        if (!value) return '—';
+        const d = new Date(value);
+        if (Number.isNaN(d.getTime())) return '—';
+        const parts = new Intl.DateTimeFormat('en-GB', {
+            timeZone: 'Europe/Moscow',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false,
+        }).formatToParts(d);
+        const get = (type) => parts.find((p) => p.type === type)?.value || '00';
+        return `${get('day')}.${get('month')}.${get('year')} ${get('hour')}:${get('minute')}:${get('second')}`;
+    }
+
     function renderContextBlock(row, extraRowsHtml = '') {
         return `<div class="row-view-section">
             ${renderSectionHeading('Контекст')}
             <dl class="row small mb-0">
-                <dt class="col-sm-4">Телефон</dt><dd class="col-sm-8">${escapeHtml(row.raw_phone || '—')}</dd>
+                <dt class="col-sm-4">Телефон</dt><dd class="col-sm-8">${renderPhoneLink(row.raw_phone)}</dd>
+                <dt class="col-sm-4">Время звонка</dt><dd class="col-sm-8">${escapeHtml(formatCalledAt(row.called_at))}</dd>
                 <dt class="col-sm-4">Сделка</dt><dd class="col-sm-8">${renderDealCell(row)}</dd>
                 ${row.manual_review_reason ? `<dt class="col-sm-4">Причина проверки</dt><dd class="col-sm-8 text-warning">${escapeHtml(row.manual_review_reason)}</dd>` : ''}
                 ${extraRowsHtml}
@@ -1055,7 +1145,7 @@
             fieldsHtml = `
                 <dl class="row small mb-0">
                     <dt class="col-sm-4">Контакт</dt><dd class="col-sm-8">${escapeHtml(fc.contact_name || `#${fc.contact_id || '—'}`)}</dd>
-                    <dt class="col-sm-4">Телефон</dt><dd class="col-sm-8">${escapeHtml(fc.phone || '—')}</dd>
+                    <dt class="col-sm-4">Телефон</dt><dd class="col-sm-8">${renderPhoneLink(fc.phone)}</dd>
                     <dt class="col-sm-4">Метод</dt><dd class="col-sm-8">${escapeHtml(searchMethodLabel(previewData.search_method))}</dd>
                     <dt class="col-sm-4">Ключевые слова</dt><dd class="col-sm-8">${escapeHtml(keywords)}</dd>
                     <dt class="col-sm-4">Причина</dt><dd class="col-sm-8">${escapeHtml(fc.reason || '—')}</dd>
@@ -1328,7 +1418,13 @@
                 };
                 showAlert(alertEl, data.message || 'Готово', 'success');
                 await loadImport(importId, { fullReload: true });
-                openNextFilteredRow(importId, rowId);
+                if (action === 'find_contact') {
+                    openNextFilteredRow(importId, rowId, 'manual_review');
+                } else {
+                    const targetFilter = ACTION_TO_FILTER[action];
+                    if (targetFilter) setActiveFilter(targetFilter);
+                    openNextFilteredRow(importId, rowId);
+                }
             }
         } catch (e) {
             showAlert(alertEl, e.message, 'danger');
@@ -1336,8 +1432,8 @@
         }
     }
 
-    function openNextFilteredRow(importId, currentRowId) {
-        const remaining = getFilteredRows(activeFilterId).filter((r) => r.id !== currentRowId);
+    function openNextFilteredRow(importId, currentRowId, filterId = activeFilterId) {
+        const remaining = getFilteredRows(filterId).filter((r) => r.id !== currentRowId);
         if (remaining.length) {
             openRowViewer(importId, remaining[0].id, { keepOpen: true });
             return;
@@ -1383,8 +1479,11 @@
         const filteredRows = getFilteredRows(activeFilterId);
         const rowIndex = filteredRows.findIndex((r) => r.id === rowId);
         const positionSuffix = rowIndex >= 0 ? ` (${rowIndex + 1} / ${filteredRows.length})` : '';
-        document.getElementById('row-view-title').textContent =
-            `Строка #${row.source_row_number} · ${row.raw_phone || '—'}${positionSuffix}`;
+        const titleEl = document.getElementById('row-view-title');
+        if (titleEl) {
+            titleEl.innerHTML =
+                `Строка #${row.source_row_number} · ${renderPhoneLink(row.raw_phone)}${positionSuffix}`;
+        }
 
         const footer = document.getElementById('row-view-footer');
         const bodyEl = document.getElementById('row-view-body');
@@ -1407,8 +1506,12 @@
         } else {
             if (bodyEl) bodyEl.innerHTML = renderManualReviewBody(row);
             if (footer) {
-                footer.innerHTML = renderManualReviewFooter(rowId);
-                bindManualReviewActions(importId, rowId);
+                if (row.row_filter === 'manual_review') {
+                    footer.innerHTML = renderManualReviewFooter(rowId);
+                    bindManualReviewActions(importId, rowId);
+                } else {
+                    footer.innerHTML = '<button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>';
+                }
             }
         }
 

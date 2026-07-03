@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
+
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
 from app.config import Settings
-from app.models import CallResultImportRow, utcnow
+from app.models import BitrixPreparedAction, CallResultImportRow, utcnow
 from app.repositories.call_result_repository import CallResultRepository
 from app.services.call_results.llm_schema import AlternateContactData, CallResultSignals, compute_primary_outcome
 from app.services.call_results.lpr_contact_search_provider import (
@@ -22,6 +24,12 @@ from app.services.call_results.payload_builder import BitrixPayloadBuilder
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.retry_queue_gateway import RetryQueueGateway
 from app.services.call_results.action_planner import PlannedAction
+from app.services.call_results.idempotency import build_action_idempotency_key
+from app.services.call_results.row_filter import (
+    KEEP_METHODS_BY_FILTER,
+    OPERATOR_FILTER_BY_ACTION,
+    RowFilter,
+)
 
 ManualResolveAction = Literal["comment", "todo", "find_contact", "create_contact"]
 
@@ -278,6 +286,77 @@ class ManualReviewService:
         ext = row.extracted_data or {}
         return str(sig.get("summary") or ext.get("summary") or row.comment or "")
 
+    def _assign_operator_filter(self, row: CallResultImportRow, filter_id: RowFilter) -> None:
+        row.operator_filter = filter_id
+
+    def _disable_non_target_actions(
+        self,
+        import_id: int,
+        row_id: int,
+        keep_methods: frozenset[str],
+    ) -> None:
+        for action in self.repo.list_actions(import_id):
+            if action.import_row_id != row_id:
+                continue
+            if action.method not in keep_methods:
+                action.is_enabled = False
+
+    def _finalize_operator_bucket(
+        self,
+        import_id: int,
+        row: CallResultImportRow,
+        filter_id: RowFilter,
+    ) -> None:
+        self._assign_operator_filter(row, filter_id)
+        keep_methods = KEEP_METHODS_BY_FILTER.get(filter_id, frozenset())
+        if keep_methods:
+            self._disable_non_target_actions(import_id, row.id, keep_methods)
+        else:
+            self._disable_non_target_actions(import_id, row.id, frozenset())
+        self.db.flush()
+
+    def _upsert_retry_queue_action(self, import_id: int, row: CallResultImportRow) -> None:
+        payload = {
+            "reason": "hangup_replacement_contact",
+            "search_required": False,
+        }
+        source_id = row.source_identity or row.row_hash or str(row.id)
+        idem = build_action_idempotency_key(
+            method="retry_queue.add",
+            deal_id=row.matched_deal_id,
+            source_id=source_id,
+            operation_type="retry_queue_add",
+        )
+        actions = [
+            a for a in self.repo.list_actions(import_id)
+            if a.import_row_id == row.id and a.method == "retry_queue.add"
+        ]
+        if actions:
+            action = actions[0]
+            action.payload = payload
+            action.is_enabled = True
+            action.execution_status = "prepared"
+            action.human_summary = "Перезвон на другой номер"
+            return
+
+        self.db.add(
+            BitrixPreparedAction(
+                import_id=import_id,
+                import_row_id=row.id,
+                action_group_id=str(uuid.uuid4()),
+                method="retry_queue.add",
+                action_type="retry_queue_add",
+                operation_type="retry_queue_add",
+                payload=payload,
+                human_summary="Перезвон на другой номер",
+                validation_status="valid",
+                is_enabled=True,
+                idempotency_key=idem,
+                sort_order=0,
+                execution_status="prepared",
+            )
+        )
+
     def _patch_action_payload(
         self,
         import_id: int,
@@ -357,6 +436,7 @@ class ManualReviewService:
         ]
         if not actions:
             raise ManualReviewError("Не удалось подготовить комментарий для Битрикс24")
+        self._finalize_operator_bucket(import_id, row, OPERATOR_FILTER_BY_ACTION["comment"])
         return ManualResolveResult(
             action="comment",
             message="Комментарий подготовлен. Нажмите «Отправить в Bitrix24» для выполнения.",
@@ -404,6 +484,7 @@ class ManualReviewService:
         ]
         if not actions:
             raise ManualReviewError("Не удалось подготовить CRM-дело для Битрикс24")
+        self._finalize_operator_bucket(import_id, row, OPERATOR_FILTER_BY_ACTION["todo"])
         return ManualResolveResult(
             action="todo",
             message="CRM-дело подготовлено. Нажмите «Отправить в Bitrix24» для выполнения.",
@@ -456,6 +537,9 @@ class ManualReviewService:
         if not actions:
             raise ManualReviewError("Не удалось подготовить создание контакта для Битрикс24")
 
+        row = self.repo.get_row(import_id, row.id)
+        assert row is not None
+        self._finalize_operator_bucket(import_id, row, OPERATOR_FILTER_BY_ACTION["create_contact"])
         return ManualResolveResult(
             action="create_contact",
             message="Создание контакта подготовлено. Нажмите «Отправить в Bitrix24» для выполнения.",
@@ -518,6 +602,12 @@ class ManualReviewService:
         row.manually_overridden_at = utcnow()
         row.classification_source = "manual"
         row.classification_reason = found.get("reason") or "Найден другой контакт (ЛПР)"
+        ext = dict(row.extracted_data or {})
+        ext["dial_phone"] = found["phone"]
+        ext["replacement_contact_id"] = found["contact_id"]
+        row.extracted_data = ext
+        self._upsert_retry_queue_action(import_id, row)
+        self._finalize_operator_bucket(import_id, row, OPERATOR_FILTER_BY_ACTION["find_contact"])
         self.db.flush()
 
         return ManualResolveResult(

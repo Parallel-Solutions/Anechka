@@ -43,6 +43,7 @@ from app.services.call_results.matcher import CallResultMatcher, MatchResult, in
 from app.services.call_results.payload_builder import BitrixPayloadBuilder
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.phone_normalizer import parse_phone_with_extension
+from app.services.call_results.row_disposition import should_plan_outcome_comment
 
 logger = logging.getLogger(__name__)
 
@@ -620,6 +621,7 @@ class CallResultOrchestrator:
                 row.skip_reason = "Точный дубликат попытки"
             elif match_manual:
                 row.skip_reason = row.skip_reason or row.match_reason or "Проблема сопоставления со сделкой"
+            self._persist_outcome_comment_if_needed(imp, row)
             row.execution_status = "blocked_manual_review"
             return
 
@@ -635,6 +637,8 @@ class CallResultOrchestrator:
             requires_manual=merged.requires_manual,
             contact_creation_allowed=self.marker_validator.contact_creation_allowed(),
         )
+
+        self._append_outcome_comment_if_needed(row, planned)
 
         if not planned and not merged.signals.active_signal_count():
             row.skip_reason = row.skip_reason or "Нет утверждённых действий"
@@ -692,6 +696,38 @@ class CallResultOrchestrator:
                 execution_status="prepared",
             )
             self.db.add(action)
+
+    def _append_outcome_comment_if_needed(
+        self,
+        row: CallResultImportRow,
+        planned: list,
+    ) -> None:
+        if not should_plan_outcome_comment(row, planned):
+            return
+        order = max((a.sort_order for a in planned), default=-1) + 1
+        planned.append(self.action_planner.plan_outcome_comment(sort_order=order))
+
+    def _persist_outcome_comment_if_needed(
+        self,
+        imp: CallResultImport,
+        row: CallResultImportRow,
+    ) -> None:
+        deal_id = row.matched_deal_id
+        if not deal_id:
+            return
+        deal = self.matcher.get_deal(deal_id)
+        assigned = deal.assigned_by_id if deal else None
+        planned: list = []
+        self._append_outcome_comment_if_needed(row, planned)
+        if not planned:
+            return
+        self._persist_planned_actions(
+            imp,
+            row,
+            planned,
+            deal_id=deal_id,
+            assigned_by_id=assigned,
+        )
 
     def persist_manual_create_contact(
         self,

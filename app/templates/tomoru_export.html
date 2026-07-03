@@ -30,30 +30,31 @@
             <div class="row g-3">
                 <div class="col-md-6" id="category-wrap">
                     <label class="form-label">Воронка</label>
+                    <div id="category-loading" class="loading-inline text-muted small d-none mb-1"></div>
                     <select class="form-select" name="category_id" id="category_id"></select>
-                    <div class="form-text">На чистой главной поле пустое. При открытии ссылки с фильтрами воронка подставляется автоматически.</div>
                 </div>
                 <div class="col-md-6 d-none" id="stage-wrap">
                     <label class="form-label" id="stage-label">Стадия</label>
+                    <div id="stage-loading" class="loading-inline text-muted small d-none mb-1"></div>
                     <select class="form-select" name="stage_id" id="stage_id" multiple></select>
                     <div class="form-text">Можно выбрать несколько. Пустой выбор — любая стадия.</div>
                 </div>
                 <div class="col-md-6" id="region-wrap">
                     <label class="form-label">Регион</label>
+                    <div id="region-loading" class="loading-inline text-muted small d-none mb-1"></div>
                     <select class="form-select" name="region_id" id="region_id" multiple></select>
-                    <div class="form-text">Справочник Bitrix (инфоблок 49). Можно выбрать несколько.</div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Период создания</label>
                     <div class="row g-2">
                         <div class="col-6">
-                            <input type="text" class="form-control" id="date_from" placeholder="С" autocomplete="off">
+                            <input type="text" class="form-control" id="date_from" placeholder="С" autocomplete="off" inputmode="numeric" maxlength="10">
                         </div>
                         <div class="col-6">
-                            <input type="text" class="form-control" id="date_to" placeholder="По" autocomplete="off">
+                            <input type="text" class="form-control" id="date_to" placeholder="По" autocomplete="off" inputmode="numeric" maxlength="10">
                         </div>
                     </div>
-                    <div class="form-text">Можно указать только начало, только конец или обе даты.</div>
+                    <div class="form-text">Формат: ГГГГ-ММ-ДД</div>
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary" id="submit-btn">Запустить выгрузку</button>
@@ -73,9 +74,9 @@
     <div class="card-body">
         <div id="deals-lpr-toolbar" class="d-none d-flex flex-wrap align-items-center gap-3 mb-3">
             <div class="btn-group btn-group-sm" role="group" aria-label="Вид таблицы ЛПР">
-                <input type="radio" class="btn-check" name="lpr-view" id="lpr-view-all" value="all" autocomplete="off">
+                <input type="radio" class="btn-check" name="lpr-view" id="lpr-view-all" value="all" checked autocomplete="off">
                 <label class="btn btn-outline-secondary" for="lpr-view-all">Все</label>
-                <input type="radio" class="btn-check" name="lpr-view" id="lpr-view-uncertain" value="uncertain" checked autocomplete="off">
+                <input type="radio" class="btn-check" name="lpr-view" id="lpr-view-uncertain" value="uncertain" autocomplete="off">
                 <label class="btn btn-outline-secondary" for="lpr-view-uncertain">Только неуверенные</label>
             </div>
             <div id="confidence-threshold-wrap" class="d-flex align-items-center gap-2">
@@ -89,7 +90,7 @@
         </div>
         <div id="deals-note" class="small text-muted mb-2"></div>
         <div id="deals-placeholder" class="text-muted small">Выберите стадию, регион или период — тогда здесь появится превью сделок.</div>
-        <div id="deals-loading" class="text-muted small d-none">Загрузка…</div>
+        <div id="deals-loading" class="loading-inline text-muted small d-none"></div>
         <div id="deals-empty" class="text-muted small d-none">Сделки не найдены</div>
         <div class="table-responsive d-none" id="deals-table-wrap">
             <table class="table table-sm table-bordered mb-0">
@@ -124,6 +125,7 @@
 (function(){
     const DEFAULT_CATEGORY = 15;
     const PAGE_SIZE = 50;
+    const LPR_VIEW_STORAGE_KEY = 'tomoru_lpr_view';
     const TOMORU_APP_URL = 'https://app.tomoru.ru/org/parallelnye-resheniya';
     const BITRIX_CONNECTED = {{ 'true' if bitrix_connected else 'false' }};
     const form = document.getElementById('tomoru-form');
@@ -139,19 +141,36 @@
     let regionTomSelect = null;
     let dateFromPicker = null;
     let dateToPicker = null;
+    const stageNameById = {};
     const dealsState = {
         offset: 0,
         limit: PAGE_SIZE,
         total: 0,
         loading: false,
-        lprView: 'uncertain',
+        lprView: 'all',
         confidenceThreshold: 70,
+        hasMore: false,
+        scannedTotal: null,
+        matchedTotal: null,
+        scanComplete: true,
     };
+    let dealsPreviewAbortController = null;
+    let dealsPreviewRequestSeq = 0;
     const contactOverrides = {};
     const manuallyChangedDeals = new Set();
     const saveContactTimers = {};
     const submitBtnDefaultText = submitBtn.textContent;
     let applyingFromUrl = false;
+    function loadLprViewPreference() {
+        try {
+            const v = localStorage.getItem(LPR_VIEW_STORAGE_KEY);
+            if (v === 'all' || v === 'uncertain') return v;
+        } catch (_) {}
+        return 'all';
+    }
+    function saveLprViewPreference(view) {
+        try { localStorage.setItem(LPR_VIEW_STORAGE_KEY, view); } catch (_) {}
+    }
     function formatIsoDate(d) {
         const y = d.getFullYear();
         const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -165,12 +184,31 @@
         const d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
         return isNaN(d.getTime()) ? null : d;
     }
+    function attachIsoDateMask(input) {
+        if (!input) return;
+        input.addEventListener('input', function () {
+            const digits = input.value.replace(/\D/g, '').slice(0, 8);
+            let formatted = digits.slice(0, 4);
+            if (digits.length > 4) formatted += '-' + digits.slice(4, 6);
+            if (digits.length > 6) formatted += '-' + digits.slice(6, 8);
+            if (input.value !== formatted) {
+                input.value = formatted;
+            }
+        });
+    }
+    function readDateFromPicker(picker, inputEl) {
+        if (picker && picker.selectedDates[0]) {
+            return formatIsoDate(picker.selectedDates[0]);
+        }
+        const raw = (inputEl && inputEl.value || '').trim();
+        if (!raw) return '';
+        const parsed = parseIsoDate(raw);
+        return parsed ? formatIsoDate(parsed) : '';
+    }
     function readDateRangeFromPicker() {
-        const fromDates = dateFromPicker ? dateFromPicker.selectedDates : [];
-        const toDates = dateToPicker ? dateToPicker.selectedDates : [];
         return {
-            date_from: fromDates[0] ? formatIsoDate(fromDates[0]) : '',
-            date_to: toDates[0] ? formatIsoDate(toDates[0]) : '',
+            date_from: readDateFromPicker(dateFromPicker, dateFromInput),
+            date_to: readDateFromPicker(dateToPicker, dateToInput),
         };
     }
     function syncDatePickerConstraints() {
@@ -200,20 +238,24 @@
         }
         syncDatePickerConstraints();
     }
+    function onDatePickerCommit() {
+        syncDatePickerConstraints();
+        onFilterChange({ offset: 0 });
+    }
     function initDatePickers() {
         if (typeof flatpickr === 'undefined') return;
         const fpOptions = {
             mode: 'single',
             dateFormat: 'Y-m-d',
             locale: flatpickr.l10ns.ru,
-            allowInput: false,
-            onChange: function() {
-                syncDatePickerConstraints();
-                onFilterChange({ offset: 0 });
-            },
+            allowInput: true,
+            onChange: onDatePickerCommit,
+            onClose: onDatePickerCommit,
         };
         dateFromPicker = flatpickr(dateFromInput, fpOptions);
         dateToPicker = flatpickr(dateToInput, fpOptions);
+        attachIsoDateMask(dateFromInput);
+        attachIsoDateMask(dateToInput);
     }
     function defaultFilterState() {
         return {
@@ -295,14 +337,30 @@
         stageWrap.classList.toggle('d-none', !show);
     }
     function hasActiveFilters(state) {
-        const f = state || parseFiltersFromUrl();
-        return f.stage_ids.length > 0
+        const f = state || sanitizeFilterState(parseFiltersFromUrl());
+        return f.category_id != null
+            || f.stage_ids.length > 0
             || f.region_ids.length > 0
             || Boolean(f.date_from)
             || Boolean(f.date_to);
     }
     function optionExists(selectEl, value) {
         return Array.from(selectEl.options).some((o) => o.value === String(value));
+    }
+    function sanitizeFilterState(state) {
+        return Object.assign({}, state, {
+            stage_ids: (state.stage_ids || []).filter((id) => optionExists(stageSelect, id)),
+            region_ids: (state.region_ids || []).filter((id) => optionExists(regionSelect, id)),
+        });
+    }
+    function regionsFromIds(regionIds) {
+        return (regionIds || []).map((id) => {
+            const opt = regionSelect.querySelector('option[value="' + id + '"]');
+            return {
+                id: id,
+                name: opt ? opt.textContent : null,
+            };
+        });
     }
     async function applyFiltersToForm(state, options) {
         const silent = !options || options.silent !== false;
@@ -323,30 +381,28 @@
             }
             setDateFieldsOnPickers(state.date_from, state.date_to);
             dealsState.offset = state.offset;
-            const validStageIds = state.stage_ids.filter((id) => optionExists(stageSelect, id));
+            const sanitized = sanitizeFilterState(state);
             if (stageTomSelect) {
-                stageTomSelect.setValue(validStageIds, silent);
+                stageTomSelect.setValue(sanitized.stage_ids, silent);
             }
-            const validRegionIds = state.region_ids
-                .filter((id) => optionExists(regionSelect, id))
-                .map(String);
             if (regionTomSelect) {
-                regionTomSelect.setValue(validRegionIds, silent);
+                regionTomSelect.setValue(sanitized.region_ids.map(String), silent);
             }
+            return sanitized;
         } finally {
             applyingFromUrl = false;
         }
     }
     async function navigateFilters(state, options) {
         const fromPopstate = options && options.fromPopstate === true;
+        const sanitized = await applyFiltersToForm(state, { silent: true });
         if (!fromPopstate) {
-            const query = buildUrlFromFilters(state);
+            const query = buildUrlFromFilters(sanitized);
             const newUrl = window.location.pathname + query;
             if (window.location.pathname + window.location.search !== newUrl) {
                 history.pushState(null, '', newUrl);
             }
         }
-        await applyFiltersToForm(state, { silent: true });
         maybeLoadDealsPreview();
     }
     function onFilterChange(overrides) {
@@ -392,6 +448,23 @@
     }
     function fmtDealCell(value) {
         return value === null || value === undefined || value === '' ? '—' : escapeHtml(value);
+    }
+    function loadingHtml(text) {
+        return '<span class="loading-inline">'
+            + '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>'
+            + '<span>' + escapeHtml(text || 'Загрузка…') + '</span>'
+            + '</span>';
+    }
+    function setWrapLoading(loadingElId, isLoading, text) {
+        const loadingEl = document.getElementById(loadingElId);
+        if (!loadingEl) return;
+        loadingEl.innerHTML = isLoading ? loadingHtml(text) : '';
+        loadingEl.classList.toggle('d-none', !isLoading);
+    }
+    function formatStageName(deal) {
+        const fromApi = deal.stage_name;
+        if (fromApi && fromApi !== deal.stage_id) return fromApi;
+        return stageNameById[deal.stage_id] || fromApi || deal.stage_id;
     }
     function bitrixLink(url, label) {
         if (!url) return '—';
@@ -450,9 +523,19 @@
     }
     function setDealsLoading(isLoading) {
         dealsState.loading = isLoading;
-        document.getElementById('deals-loading').classList.toggle('d-none', !isLoading);
+        const loadingEl = document.getElementById('deals-loading');
+        loadingEl.innerHTML = isLoading ? loadingHtml('Загрузка…') : '';
+        loadingEl.classList.toggle('d-none', !isLoading);
+        if (isLoading) {
+            document.getElementById('deals-table-wrap').classList.add('d-none');
+            document.getElementById('deals-pager').classList.add('d-none');
+        }
     }
     function showPreviewPlaceholder() {
+        if (dealsPreviewAbortController) {
+            dealsPreviewAbortController.abort();
+            dealsPreviewAbortController = null;
+        }
         dealsState.total = 0;
         document.getElementById('deals-total').textContent = '';
         document.getElementById('deals-note').textContent = '';
@@ -511,6 +594,9 @@
         regionTomSelect = new TomSelect('#region_id', multiTomSelectOptions('— любой регион —'));
         if(!BITRIX_CONNECTED){
             regionTomSelect.disable();
+        } else {
+            regionSelect.disabled = false;
+            regionTomSelect.enable();
         }
         regionTomSelect.on('change', () => {
             onFilterChange({ offset: 0 });
@@ -522,6 +608,7 @@
             initRegionTomSelect();
             return;
         }
+        setWrapLoading('region-loading', true, 'Загрузка регионов…');
         try {
             const resp = await fetch('/api/regions');
             if(!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -536,6 +623,8 @@
         } catch(e) {
             initRegionTomSelect();
             setMessage('Не удалось загрузить регионы: ' + e.message, true);
+        } finally {
+            setWrapLoading('region-loading', false);
         }
     }
     function clearRegionSelection(){
@@ -622,7 +711,7 @@
             + '<tr class="table-light">'
             + `<td class="ps-4">${nameCell}</td>`
             + `<td>${descCell}</td>`
-            + `<td>${fmtDealCell(company.phone)}</td>`
+            + `<td>${renderPhoneLink(company.phone)}</td>`
             + '<td>Компания</td>'
             + '<td>—</td>'
             + '<td class="text-center">'
@@ -662,7 +751,7 @@
                 + `<td class="ps-4">${nameCell}${primaryMark}</td>`
                 + `<td>${fmtDealCell(contact.post)}</td>`
                 + `<td>${descCell}</td>`
-                + `<td>${fmtDealCell(contact.phone)}</td>`
+                + `<td>${renderPhoneLink(contact.phone)}</td>`
                 + `<td>${sourceLabel(contact.source)}</td>`
                 + `<td>${confidenceCell}</td>`
                 + `<td class="text-center">`
@@ -702,15 +791,23 @@
     function renderLprSummary(data) {
         const summaryEl = document.getElementById('lpr-summary');
         const toolbarEl = document.getElementById('deals-lpr-toolbar');
-        if (!data.available || !data.lpr_summary) {
+        if (!data.available) {
             toolbarEl.classList.add('d-none');
             summaryEl.textContent = '';
             return;
         }
         toolbarEl.classList.remove('d-none');
         syncLprToolbarFromState();
-        const s = data.lpr_summary;
-        summaryEl.innerHTML = `Уверенных ЛПР: <strong>${s.confident_percent}%</strong> (${s.confident_count} из ${s.deals_total})`;
+        if (data.lpr_summary) {
+            const s = data.lpr_summary;
+            summaryEl.innerHTML = `Уверенных ЛПР: <strong>${s.confident_percent}%</strong> (${s.confident_count} из ${s.deals_total})`;
+            return;
+        }
+        if (dealsState.lprView === 'uncertain' && data.scanned_total != null && data.matched_total != null) {
+            summaryEl.textContent = `Проверено ${data.scanned_total} из ${data.matched_total} сделок по фильтру`;
+            return;
+        }
+        summaryEl.textContent = '';
     }
     function renderDeals(data) {
         const noteEl = document.getElementById('deals-note');
@@ -722,6 +819,10 @@
         const totalEl = document.getElementById('deals-total');
         const pageInfo = document.getElementById('deals-page-info');
         dealsState.total = data.total || 0;
+        dealsState.hasMore = Boolean(data.has_more);
+        dealsState.scannedTotal = data.scanned_total != null ? data.scanned_total : null;
+        dealsState.matchedTotal = data.matched_total != null ? data.matched_total : null;
+        dealsState.scanComplete = data.scan_complete !== false;
         if (data.lpr_view) {
             dealsState.lprView = data.lpr_view;
         }
@@ -729,11 +830,12 @@
         noteEl.textContent = data.note || '';
         noteEl.classList.toggle('text-warning', Boolean(data.note && !data.available));
         renderLprSummary(data);
-        if (data.available && data.lpr_summary) {
-            if (dealsState.lprView === 'uncertain') {
-                totalEl.textContent = `Неуверенных: ${dealsState.total} из ${data.lpr_summary.deals_total}`;
+        if (data.available && dealsState.lprView === 'uncertain') {
+            if (dealsState.scanComplete) {
+                totalEl.textContent = `Неуверенных: ${dealsState.total}`;
             } else {
-                totalEl.textContent = `Всего: ${data.lpr_summary.deals_total}`;
+                const shown = data.deals ? data.deals.length : 0;
+                totalEl.textContent = `Неуверенных на странице: ${shown}`;
             }
         } else {
             totalEl.textContent = data.available ? `Всего: ${dealsState.total}` : '';
@@ -768,13 +870,13 @@
                 + `<td>${bitrixLink(deal.bitrix_url, 'Открыть')}</td>`
                 + `<td>${idCell}</td>`
                 + `<td>${titleCell}</td>`
-                + `<td>${fmtDealCell(deal.stage_name || deal.stage_id)}</td>`
+                + `<td>${fmtDealCell(formatStageName(deal))}</td>`
                 + `<td>${fmtDealCell(deal.created_time)}</td>`
                 + `<td>${formatConfidence(deal.lpr_confidence)}</td>`
                 + '</tr>'
             );
             const contactsHeader = (
-                '<tr class="table-light">'
+                '<tr class="table-light deal-block-end">'
                 + '<td colspan="6" class="p-0">'
                 + '<table class="table table-sm table-bordered mb-0 ms-3" style="width:calc(100% - 1rem)">'
                 + '<thead><tr class="small text-muted">'
@@ -792,23 +894,28 @@
         });
         const start = dealsState.offset + 1;
         const end = dealsState.offset + data.deals.length;
-        pageInfo.textContent = `${start}–${end} из ${dealsState.total}`;
-        const hidePager = dealsState.lprView === 'uncertain' || dealsState.total <= dealsState.limit;
+        pageInfo.textContent = `${start}–${end}${dealsState.hasMore ? '+' : ''} из ${dealsState.total}${dealsState.hasMore ? '+' : ''}`;
+        const hidePager = !data.available || (data.deals.length === 0 && dealsState.offset <= 0 && !dealsState.hasMore);
         pager.classList.toggle('d-none', hidePager);
         document.getElementById('deals-prev').disabled = dealsState.offset <= 0;
-        document.getElementById('deals-next').disabled = dealsState.offset + dealsState.limit >= dealsState.total;
+        document.getElementById('deals-next').disabled = !dealsState.hasMore;
     }
     async function loadDealsPreview() {
-        if (dealsState.loading) return;
-        const f = parseFiltersFromUrl();
+        const f = sanitizeFilterState(parseFiltersFromUrl());
         const toolbar = readLprToolbarState();
         dealsState.lprView = toolbar.lprView;
         dealsState.confidenceThreshold = toolbar.confidenceThreshold;
-        dealsState.offset = dealsState.lprView === 'uncertain' ? 0 : f.offset;
+        dealsState.offset = f.offset;
         if (!hasActiveFilters(f)) {
             showPreviewPlaceholder();
             return;
         }
+        if (dealsPreviewAbortController) {
+            dealsPreviewAbortController.abort();
+        }
+        const abortController = new AbortController();
+        dealsPreviewAbortController = abortController;
+        const requestSeq = ++dealsPreviewRequestSeq;
         document.getElementById('deals-placeholder').classList.add('d-none');
         setDealsLoading(true);
         try {
@@ -818,16 +925,17 @@
                 category_id: String(categoryId),
                 lpr_view: dealsState.lprView,
                 confidence_threshold: String(dealsState.confidenceThreshold),
+                offset: String(dealsState.offset),
+                page_size: String(dealsState.limit),
             });
-            if (dealsState.lprView === 'all') {
-                params.set('offset', String(dealsState.offset));
-                params.set('page_size', String(dealsState.limit));
-            }
             f.stage_ids.forEach((id) => params.append('stage_id', id));
             f.region_ids.forEach((id) => params.append('region_id', String(id)));
             if (f.date_from) params.set('date_from', f.date_from);
             if (f.date_to) params.set('date_to', f.date_to);
-            const resp = await fetch('/api/tomoru/deals?' + params);
+            const resp = await fetch('/api/tomoru/deals?' + params, {
+                signal: abortController.signal,
+            });
+            if (requestSeq !== dealsPreviewRequestSeq) return;
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({}));
                 renderDeals({
@@ -839,7 +947,9 @@
                 return;
             }
             renderDeals(await resp.json());
-        } catch (_) {
+        } catch (err) {
+            if (err && err.name === 'AbortError') return;
+            if (requestSeq !== dealsPreviewRequestSeq) return;
             renderDeals({
                 available: false,
                 total: 0,
@@ -847,7 +957,9 @@
                 note: 'Ошибка сети при загрузке сделок',
             });
         } finally {
-            setDealsLoading(false);
+            if (requestSeq === dealsPreviewRequestSeq) {
+                setDealsLoading(false);
+            }
         }
     }
     function resetStages(placeholder){
@@ -858,6 +970,8 @@
     }
     async function loadCategories(preferredCategoryId){
         resetStages();
+        setWrapLoading('category-loading', true, 'Загрузка воронок…');
+        categorySelect.disabled = true;
         categorySelect.innerHTML = '<option>Загрузка...</option>';
         try {
             const resp = await fetch('/api/categories');
@@ -871,14 +985,14 @@
             cats.forEach(c => {
                 const o = document.createElement('option');
                 o.value = c.id;
-                o.textContent = c.name + ' (id ' + c.id + ')';
+                o.textContent = c.name;
                 categorySelect.appendChild(o);
             });
             if (preferredCategoryId != null) {
                 if (!cats.some(c => c.id === preferredCategoryId)) {
                     const o = document.createElement('option');
                     o.value = preferredCategoryId;
-                    o.textContent = 'Коммерческое предложение (id ' + preferredCategoryId + ')';
+                    o.textContent = 'Воронка #' + preferredCategoryId;
                     categorySelect.appendChild(o);
                 }
                 categorySelect.value = String(preferredCategoryId);
@@ -896,6 +1010,9 @@
             categorySelect.appendChild(emptyOpt);
             setMessage('Не удалось загрузить воронки: ' + e.message, true);
             updateStageVisibility(false);
+        } finally {
+            categorySelect.disabled = false;
+            setWrapLoading('category-loading', false);
         }
     }
     async function loadStagesForDeal(){
@@ -905,16 +1022,19 @@
             initStageTomSelect();
             return;
         }
+        setWrapLoading('stage-loading', true, 'Загрузка стадий…');
         resetStages('Загрузка...');
         try {
             const resp = await fetch('/api/categories/' + encodeURIComponent(categoryId) + '/stages');
             if(!resp.ok) throw new Error('HTTP ' + resp.status);
             const stages = await resp.json();
+            Object.keys(stageNameById).forEach((k) => delete stageNameById[k]);
             resetStageSelect();
             stages.forEach(s => {
+                stageNameById[s.id] = s.name;
                 const o = document.createElement('option');
                 o.value = s.id;
-                o.textContent = s.name + ' (' + s.id + ')';
+                o.textContent = s.name;
                 stageSelect.appendChild(o);
             });
             initStageTomSelect();
@@ -922,6 +1042,8 @@
             resetStages();
             initStageTomSelect();
             setMessage('Не удалось загрузить стадии: ' + e.message, true);
+        } finally {
+            setWrapLoading('stage-loading', false);
         }
     }
     categorySelect.addEventListener('change', async () => {
@@ -941,12 +1063,9 @@
         el.addEventListener('change', () => {
             if (!el.checked) return;
             dealsState.lprView = el.value;
+            saveLprViewPreference(dealsState.lprView);
             updateThresholdVisibility();
-            if (dealsState.lprView === 'uncertain') {
-                loadDealsPreview();
-            } else {
-                onFilterChange({ offset: 0 });
-            }
+            onFilterChange({ offset: 0 });
         });
     });
     let thresholdTimer = null;
@@ -970,7 +1089,7 @@
     });
     document.getElementById('deals-next').addEventListener('click', () => {
         const f = parseFiltersFromUrl();
-        if (f.offset + dealsState.limit < dealsState.total) {
+        if (dealsState.hasMore) {
             navigateFilters(Object.assign({}, f, {
                 offset: f.offset + dealsState.limit,
             }));
@@ -983,15 +1102,15 @@
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         setMessage('');
-        const f = readFiltersFromForm();
+        const f = sanitizeFilterState(parseFiltersFromUrl());
         if (f.category_id == null) {
             setMessage('Выберите воронку', true);
             return;
         }
         window.open(TOMORU_APP_URL, '_blank', 'noopener,noreferrer');
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Формирование CSV…';
-        const regions = getSelectedRegions();
+        submitBtn.innerHTML = loadingHtml('Формирование CSV…');
+        const regions = regionsFromIds(f.region_ids);
         const payload = {
             entity_type: 'deal',
             category_id: f.category_id,
@@ -1041,11 +1160,13 @@
             loadCategories(initial.category_id),
             loadRegions(),
         ]);
-        await applyFiltersToForm(initial, { silent: true });
-        const normalized = buildUrlFromFilters(initial);
+        const sanitized = await applyFiltersToForm(initial, { silent: true });
+        const normalized = buildUrlFromFilters(sanitized);
         if (window.location.search !== normalized) {
             history.replaceState(null, '', window.location.pathname + normalized);
         }
+        dealsState.lprView = loadLprViewPreference();
+        syncLprToolbarFromState();
         maybeLoadDealsPreview();
     }
     initPage();

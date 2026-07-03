@@ -274,6 +274,49 @@ function initSettingsPage() {
     }
 
     initLprConfig();
+    initBitrixTestForm();
+}
+
+function initBitrixTestForm() {
+    const dealInput = document.getElementById('bitrix-test-deal-id');
+    const resultEl = document.getElementById('bitrix-test-result');
+    if (!dealInput || !resultEl) return;
+
+    const buttons = [
+        { id: 'btn-bitrix-test-comment', url: '/api/bitrix/test/comment', label: 'комментарий' },
+        { id: 'btn-bitrix-test-todo', url: '/api/bitrix/test/todo', label: 'дело' },
+        { id: 'btn-bitrix-test-contact', url: '/api/bitrix/test/contact', label: 'контакт' },
+    ];
+
+    const parseDealId = () => {
+        const raw = dealInput.value.trim();
+        const dealId = parseInt(raw, 10);
+        if (!raw || Number.isNaN(dealId) || dealId <= 0) {
+            showAlert(resultEl, 'Укажите корректный ID сделки (целое число больше 0)');
+            return null;
+        }
+        return dealId;
+    };
+
+    buttons.forEach(({ id, url, label }) => {
+        const btn = document.getElementById(id);
+        if (!btn) return;
+        btn.addEventListener('click', async () => {
+            const dealId = parseDealId();
+            if (dealId === null) return;
+
+            btn.disabled = true;
+            resultEl.innerHTML = `<div class="text-muted">Отправка (${label})...</div>`;
+            try {
+                const data = await postJson(url, { deal_id: dealId });
+                showAlert(resultEl, data.message, data.ok ? 'success' : 'danger');
+            } catch (e) {
+                showAlert(resultEl, e.message);
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    });
 }
 
 function initLprConfig() {
@@ -553,6 +596,7 @@ function initExportDetail() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    initPhoneExportHistory();
     initIndexPage();
     initSettingsPage();
     initAIPrompts();

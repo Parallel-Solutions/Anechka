@@ -13,10 +13,12 @@ from app.services.intelligent_export.plan_enricher import enrich_plan
 from app.services.intelligent_export.tomoru_stages import (
     KpStageCatalog,
     archive_stage_ids_from_stages,
+    expand_stage_ids_for_filter,
     extract_years_from_text,
     normalize_homoglyphs,
     normalize_stage_name,
     parse_stage_mentions,
+    resolve_query_stage_ids,
     resolve_stage_id,
     try_parse_stage_code,
     try_resolve_stage_id,
@@ -47,6 +49,46 @@ def test_archive_stage_ids_from_stages():
         {"id": "C15:UC_8W3UAD", "name": "Архив"},
     ]
     assert archive_stage_ids_from_stages(stages) == frozenset({"C15:UC_8W3UAD"})
+
+
+def test_expand_stage_ids_for_filter_prefix_and_legacy():
+    stages = [
+        {"id": "C15:NEW", "name": "Новая"},
+        {"id": "NEW", "name": "Новая"},
+        {"id": "C15:4", "name": "Тёплый"},
+        {"id": "4", "name": "Тёплый"},
+        {"id": "7", "name": "КП дошло - связаться в 2020"},
+    ]
+    assert set(expand_stage_ids_for_filter(["C15:4"], 15, stages)) == {"C15:4", "4"}
+    assert set(expand_stage_ids_for_filter(["C15:NEW"], 15, stages)) == {"C15:NEW", "NEW"}
+    assert set(expand_stage_ids_for_filter(["7"], 15, stages)) == {"7", "C15:7"}
+
+
+def test_resolve_query_stage_ids_expands_valid_selection(db_session):
+    from app.models import CrmDictionary, CrmDictionaryEntry
+
+    dictionary = CrmDictionary(
+        portal_id=PORTAL,
+        entity_type_id=ENTITY_DEAL,
+        dictionary_code="status_DEAL_STAGE_15",
+        source_type="crm.status",
+        is_active=True,
+    )
+    db_session.add(dictionary)
+    db_session.flush()
+    for external_id, raw_value in (("C15:4", "Тёплый"), ("4", "Тёплый")):
+        db_session.add(
+            CrmDictionaryEntry(
+                dictionary_id=dictionary.id,
+                external_id=external_id,
+                raw_value=raw_value,
+                is_active=True,
+            )
+        )
+    db_session.commit()
+
+    resolved = resolve_query_stage_ids(db_session, PORTAL, 15, ["C15:4"])
+    assert set(resolved or []) == {"C15:4", "4"}
 
 
 def test_resolve_novaya(kp_stages):

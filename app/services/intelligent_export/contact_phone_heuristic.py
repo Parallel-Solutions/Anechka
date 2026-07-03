@@ -308,6 +308,78 @@ def collect_deal_contacts(
     return out
 
 
+def collect_deal_contacts_batch(
+    db: Session,
+    portal_id: str,
+    deals: list[CrmEntity],
+    *,
+    include_company_contacts: bool,
+) -> dict[int, list[ContactCandidate]]:
+    if not deals:
+        return {}
+    repo = ContactRepository(db, portal_id)
+    deal_ids = [int(deal.entity_id) for deal in deals]
+    links_by_deal = repo.get_contacts_for_parents(ENTITY_DEAL, deal_ids)
+
+    payload_contact_ids: set[int] = set()
+    for deal in deals:
+        payload_contact_ids.update(_deal_contact_ids(deal))
+    linked_contact_ids = {
+        int(row["contact"].contact_id)
+        for rows in links_by_deal.values()
+        for row in rows
+        if row.get("contact") is not None
+    }
+    missing_contact_ids = sorted(payload_contact_ids - linked_contact_ids)
+    contacts_by_id = repo.get_contacts(missing_contact_ids)
+
+    company_ids: list[int] = []
+    if include_company_contacts:
+        seen_companies: set[int] = set()
+        for deal in deals:
+            company_id = _deal_company_id(deal)
+            if company_id and company_id not in seen_companies:
+                seen_companies.add(company_id)
+                company_ids.append(company_id)
+    contacts_by_company = (
+        repo.get_contacts_by_company_ids(company_ids) if include_company_contacts else {}
+    )
+
+    out: dict[int, list[ContactCandidate]] = {}
+    for deal in deals:
+        deal_id = int(deal.entity_id)
+        seen: set[int] = set()
+        candidates: list[ContactCandidate] = []
+
+        def add(contact: CrmContact, link: CrmContactLink | None, source: str) -> None:
+            cid = int(contact.contact_id)
+            if cid in seen:
+                return
+            seen.add(cid)
+            candidates.append(ContactCandidate(contact=contact, link=link, source=source))
+
+        for row in links_by_deal.get(deal_id, []):
+            contact = row.get("contact")
+            if contact is not None:
+                add(contact, row.get("link"), "deal")
+
+        for contact_id in _deal_contact_ids(deal):
+            if contact_id in seen:
+                continue
+            contact = contacts_by_id.get(contact_id)
+            if contact is not None:
+                add(contact, None, "deal")
+
+        if include_company_contacts:
+            company_id = _deal_company_id(deal)
+            if company_id:
+                for contact in contacts_by_company.get(company_id, []):
+                    add(contact, None, "company")
+
+        out[deal_id] = candidates
+    return out
+
+
 def pick_phone_for_contact(db: Session, portal_id: str, contact_id: int) -> str | None:
     repo = ContactRepository(db, portal_id)
     phones = repo.get_phones_for_contact(contact_id)

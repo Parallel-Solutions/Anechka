@@ -22,6 +22,7 @@ from app.services.intelligent_export.contact_phone_heuristic import (
     ContactCandidate,
     build_tomoru_phone_rows,
     collect_deal_contacts,
+    collect_deal_contacts_batch,
     detect_architect,
     is_deal_archived,
     is_deal_in_category,
@@ -268,6 +269,38 @@ def test_pick_last_contact_fallback(db_session):
     assert chosen.contact_id == 21
     assert "последний" in reason
     assert confidence == 30.0
+
+
+def test_collect_deal_contacts_batch_matches_single_deal(db_session):
+    deal_a = _deal_entity(db_session, 104)
+    deal_b = _deal_entity(db_session, 105, company_id=9005)
+    _company_entity(db_session, 9005)
+    _contact(db_session, 24, post="Менеджер")
+    _contact(db_session, 25, post="Директор", company_id=9005)
+    _link(db_session, 24, 104)
+    _link(db_session, 25, 105)
+    db_session.commit()
+
+    batch = collect_deal_contacts_batch(
+        db_session,
+        PORTAL,
+        [deal_a, deal_b],
+        include_company_contacts=True,
+    )
+    single_a = collect_deal_contacts(
+        db_session,
+        PORTAL,
+        deal_a,
+        include_company_contacts=True,
+    )
+    single_b = collect_deal_contacts(
+        db_session,
+        PORTAL,
+        deal_b,
+        include_company_contacts=True,
+    )
+    assert [c.contact_id for c in batch[104]] == [c.contact_id for c in single_a]
+    assert [c.contact_id for c in batch[105]] == [c.contact_id for c in single_b]
 
 
 def test_pick_single_deal_contact_over_company_contacts(db_session):

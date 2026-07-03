@@ -181,6 +181,16 @@ class RowListOut(BaseModel):
     manual_review_reason: str | None = None
     execution_status: str | None = None
     ui_disposition: Literal["manual_review", "manual_call", "auto_call"] | None = None
+    row_filter: Literal[
+        "manual_review",
+        "manual_call",
+        "auto_call",
+        "new_contacts",
+        "new_todos",
+        "new_comments",
+    ] | None = None
+    dial_phone: str | None = None
+    operator_filter: str | None = None
 
 
 class RowOut(RowListOut):

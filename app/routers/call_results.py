@@ -63,6 +63,7 @@ from app.services.call_results.orchestrator import CallResultOrchestrator
 from app.services.call_results.payload_builder import BitrixPayloadBuilder
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.row_disposition import get_row_disposition, is_manual_review_row
+from app.services.call_results.row_filter import get_dial_phone, get_row_filter
 from app.utils.portal import bitrix_deal_url
 
 router = APIRouter(tags=["call-results"])
@@ -222,6 +223,9 @@ def _row_list_out(
         manual_review_reason=row.manual_review_reason,
         execution_status=row.execution_status,
         ui_disposition=get_row_disposition(row, actions),
+        row_filter=get_row_filter(row, actions),
+        dial_phone=get_dial_phone(row),
+        operator_filter=row.operator_filter,
     )
 
 
@@ -345,7 +349,7 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
 
     manual_review_ids = [
         r.id for r in rows
-        if get_row_disposition(r, actions_by_row_id.get(r.id, [])) == "manual_review"
+        if get_row_filter(r, actions_by_row_id.get(r.id, [])) == "manual_review"
     ]
     retry_call_phones = _collect_retry_call_phones(rows)
     agg = CallAttemptAggregator()

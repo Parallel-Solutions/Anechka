@@ -15,6 +15,7 @@
     </div>
 
     <div class="d-flex gap-2 flex-wrap justify-content-end">
+        <button class="btn btn-success btn-sm" id="btn-send-and-export" disabled>Отправить в Битрикс и выгрузить автобзвон</button>
         <button class="btn btn-outline-warning btn-sm" id="btn-restart">Запустить заново</button>
         <button class="btn btn-outline-danger btn-sm" id="btn-delete-import">Удалить импорт</button>
         <a href="/call-results" class="btn btn-outline-secondary btn-sm">К списку</a>
@@ -105,7 +106,7 @@ window.CALL_RESULT_IMPORT_ID = {{ import_id }};
 
 </script>
 
-<script src="/static/js/call_results.js?v=20250702e"></script>
+<script src="/static/js/call_results.js?v=20250703b"></script>
 
 <script>initCallResultImportPage({{ import_id }});</script>
 

@@ -12,8 +12,9 @@ from app.database import get_db
 from app.dependencies import get_app_settings
 from app.exceptions import BitrixAuthenticationError
 from app.logging_config import setup_logging
-from app.schemas import ConnectionTestResponse, SettingsResponse, SettingsUpdate
+from app.schemas import BitrixTestRequest, BitrixTestResponse, ConnectionTestResponse, SettingsResponse, SettingsUpdate
 from app.services.bitrix_client import BitrixClient
+from app.services.bitrix_test_service import test_add_comment, test_add_todo, test_create_contact
 from app.services.llm_client import make_openai_client
 from app.services.security_service import mask_secret, mask_webhook
 from app.services.settings_service import load_settings_from_db, save_settings_to_db
@@ -106,6 +107,30 @@ def test_connection(db: Session = Depends(get_db)):
         )
     except Exception:
         return ConnectionTestResponse(ok=False, message="Ошибка при проверке подключения")
+
+
+@router.post("/api/bitrix/test/comment", response_model=BitrixTestResponse)
+def bitrix_test_comment(body: BitrixTestRequest, db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    if not settings.bitrix_webhook_url:
+        return BitrixTestResponse(ok=False, message="URL вебхука не настроен")
+    return test_add_comment(settings, body.deal_id)
+
+
+@router.post("/api/bitrix/test/todo", response_model=BitrixTestResponse)
+def bitrix_test_todo(body: BitrixTestRequest, db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    if not settings.bitrix_webhook_url:
+        return BitrixTestResponse(ok=False, message="URL вебхука не настроен")
+    return test_add_todo(settings, body.deal_id)
+
+
+@router.post("/api/bitrix/test/contact", response_model=BitrixTestResponse)
+def bitrix_test_contact(body: BitrixTestRequest, db: Session = Depends(get_db)):
+    settings = get_app_settings(db)
+    if not settings.bitrix_webhook_url:
+        return BitrixTestResponse(ok=False, message="URL вебхука не настроен")
+    return test_create_contact(settings, body.deal_id)
 
 
 @router.post("/api/llm/test", response_model=ConnectionTestResponse)

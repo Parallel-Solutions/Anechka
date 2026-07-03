@@ -62,3 +62,39 @@ def test_voicemail_not_hangup():
     assert not pre.unsupported_outcome
     assert pre.det_signals and pre.det_signals.no_answer
     assert not pre.det_signals.hangup_without_result
+
+
+def test_orchestrator_adds_outcome_comment_for_non_auto_call():
+    from app.services.call_results.action_planner import BitrixActionPlanner
+    from app.services.call_results.row_disposition import get_row_disposition, should_plan_outcome_comment
+
+    row = CallResultImportRow(
+        id=1,
+        import_id=1,
+        source_row_number=2,
+        raw_data={},
+        normalized_data={},
+        match_status="matched",
+        llm_status="not_required",
+        llm_required=False,
+        manually_overridden=False,
+        llm_input_truncated=False,
+        is_duplicate=False,
+        needs_manual_review=False,
+        execution_status="pending",
+        matched_deal_id=1001,
+        business_signals={"callback_later_requested": True},
+    )
+    planned = BitrixActionPlanner().plan(
+        row,
+        bitrix_deal_id=1001,
+        assigned_by_id=42,
+        signals=CallResultSignals(callback_later_requested=True, confidence=0.9),
+        requires_manual=False,
+    )
+    planner = BitrixActionPlanner()
+    if should_plan_outcome_comment(row, planned):
+        order = max((a.sort_order for a in planned), default=-1) + 1
+        planned.append(planner.plan_outcome_comment(sort_order=order))
+    assert any(a.method == "crm.timeline.comment.add" for a in planned)
+    assert get_row_disposition(row, planned) == "manual_call"

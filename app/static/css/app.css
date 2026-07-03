@@ -2,6 +2,28 @@ body {
     background-color: #f4f6f9;
 }
 
+.phone-export-link {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+    vertical-align: baseline;
+}
+
+.phone-export-link:hover,
+.phone-export-link:focus {
+    text-decoration: underline;
+}
+
+.loading-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.deal-block-end > td {
+    border-bottom: 12px solid #f4f6f9 !important;
+}
+
 .card {
     border: none;
 }

@@ -34,7 +34,12 @@
                 <td>{{ row.contact.full_name or '—' }}</td>
                 <td>{{ row.contact.post or row.contact.post_custom or '—' }}</td>
                 <td>{{ row.contact.company_title or '—' }}</td>
-                <td>{{ row.contact.primary_phone or '—' }}</td>
+                <td>
+                    {% if row.contact.primary_phone %}
+                    <button type="button" class="btn btn-link btn-sm p-0 align-baseline phone-export-link js-phone-export-history"
+                            data-phone="{{ row.contact.primary_phone }}">{{ row.contact.primary_phone }}</button>
+                    {% else %}—{% endif %}
+                </td>
                 <td>{{ '★' if row.link.is_primary else '' }}</td>
                 <td>
                     {% if not row.contact.is_synthetic %}

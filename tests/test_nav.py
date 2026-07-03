@@ -17,7 +17,15 @@ def test_navbar_hides_history_and_crm_import(client):
     assert 'href="/bitrix-import"' not in nav
     assert 'href="/tomoru-export"' in nav
     assert 'href="/call-results"' in nav
+    assert 'href="/instruction"' in nav
     assert 'href="/settings"' in nav
+
+
+def test_instruction_page_renders(client):
+    resp = client.get("/instruction")
+    assert resp.status_code == 200
+    assert "Подробное описание" in resp.text
+    assert "Краткая инструкция" in resp.text
 
 
 def test_settings_subnav_not_on_work_pages(client):

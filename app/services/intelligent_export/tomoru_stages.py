@@ -412,16 +412,22 @@ def build_stage_names_map(
     *,
     category_id: int | None = None,
 ) -> dict[str, str]:
-    """Map STAGE_ID → display name from imported CRM dictionaries."""
+    """Map STAGE_ID → display name from CRM dictionaries, with Bitrix API fallback."""
     if category_id is not None:
         stages = _load_stages_from_db(db, portal_id, category_id)
     else:
         stages = _load_all_stages_from_db(db, portal_id)
-    return {
+    result = {
         str(stage["id"]): str(stage.get("name") or stage["id"])
         for stage in stages
         if stage.get("id")
     }
+    bitrix_stages = _try_load_stages_from_bitrix(None, category_id=category_id)
+    for stage in bitrix_stages:
+        code = str(stage.get("id") or "").strip()
+        if code and code not in result:
+            result[code] = str(stage.get("name") or code)
+    return result
 
 
 def _load_all_stages_from_bitrix(client: Any) -> list[dict[str, Any]]:
@@ -471,3 +477,119 @@ def resolve_archive_stage_ids(
                 exc_info=True,
             )
     return archive_stage_ids_from_stages(stages)
+
+
+def _load_stages_for_category(
+    db: Session,
+    portal_id: str,
+    category_id: int,
+    *,
+    client: Any | None = None,
+) -> list[dict[str, Any]]:
+    stages = _load_stages_from_db(db, portal_id, category_id)
+    if not stages:
+        stages = _try_load_stages_from_bitrix(client, category_id=category_id)
+        if not stages and client is not None:
+            try:
+                stages = _load_stages_from_bitrix(client, category_id)
+            except Exception:
+                logger.warning(
+                    "Failed to load funnel %s stages for stage filter",
+                    category_id,
+                    exc_info=True,
+                )
+    return stages
+
+
+def expand_stage_ids_for_filter(
+    stage_ids: list[str],
+    category_id: int,
+    stages: list[dict[str, Any]],
+) -> list[str]:
+    """Expand selected stage IDs to all equivalent codes in the funnel catalog."""
+    if not stage_ids:
+        return []
+
+    name_to_codes: dict[str, set[str]] = {}
+    id_to_name: dict[str, str] = {}
+    for stage in stages:
+        code = str(stage.get("id") or stage.get("STATUS_ID") or "").strip()
+        if not code:
+            continue
+        name = normalize_stage_name(str(stage.get("name") or stage.get("NAME") or ""))
+        if name:
+            name_to_codes.setdefault(name, set()).add(code)
+            id_to_name[code] = name
+
+    prefix_re = re.compile(rf"^C{category_id}:(.+)$", re.I)
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    def _add(code: str) -> None:
+        code = code.strip()
+        if code and code not in seen:
+            seen.add(code)
+            expanded.append(code)
+
+    for stage_id in stage_ids:
+        sid = str(stage_id or "").strip()
+        if not sid:
+            continue
+        _add(sid)
+
+        match = prefix_re.match(sid)
+        if match:
+            suffix = match.group(1).strip()
+            if suffix and ":" not in suffix:
+                _add(suffix)
+        elif ":" not in sid:
+            _add(f"C{category_id}:{sid}")
+
+        name = id_to_name.get(sid)
+        if name:
+            for alias in name_to_codes.get(name, ()):
+                _add(alias)
+
+    return expanded
+
+
+def resolve_query_stage_ids(
+    db: Session,
+    portal_id: str,
+    category_id: int,
+    stage_ids: list[str] | None,
+    *,
+    client: Any | None = None,
+) -> list[str] | None:
+    """Validate funnel stage IDs and expand to all equivalent DB/API codes."""
+    if not stage_ids:
+        return None
+    stages = _load_stages_for_category(db, portal_id, category_id, client=client)
+    valid_ids = {str(stage.get("id") or "").strip() for stage in stages if stage.get("id")}
+    if valid_ids:
+        filtered = [stage_id for stage_id in stage_ids if stage_id in valid_ids]
+        if not filtered:
+            return None
+    else:
+        filtered = list(stage_ids)
+    expanded = expand_stage_ids_for_filter(filtered, category_id, stages)
+    return expanded or None
+
+
+def filter_stage_ids_for_category(
+    db: Session,
+    portal_id: str,
+    category_id: int,
+    stage_ids: list[str] | None,
+    *,
+    client: Any | None = None,
+) -> list[str] | None:
+    """Drop stage IDs that do not belong to the requested funnel."""
+    if not stage_ids:
+        return None
+    stages = _load_stages_for_category(db, portal_id, category_id, client=client)
+    valid_ids = {str(stage.get("id") or "").strip() for stage in stages if stage.get("id")}
+    if not valid_ids:
+        return list(stage_ids)
+    filtered = [stage_id for stage_id in stage_ids if stage_id in valid_ids]
+    return filtered if filtered else None

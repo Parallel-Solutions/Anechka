@@ -17,6 +17,7 @@ from app.services.call_results.crm_action_service import CrmActionService
 from app.services.call_results.fake_bitrix_gateway import FakeBitrixGateway
 from app.services.call_results.fake_classifier import (
     FakeCallResultClassifier,
+    callback_later_result,
     hot_lead_result,
     refusal_result,
 )
@@ -31,6 +32,10 @@ HOT_ROW_CSV = (
 REFUSAL_ROW_CSV = (
     "phone,comment,category,transcript,called_at,deal_id,call_id\n"
     '89161234570,"Do not call again",Do Not Call,"Refused",2026-06-29T13:00:00+03:00,1004,call-004\n'
+).encode("utf-8")
+CALLBACK_ROW_CSV = (
+    "phone,comment,category,transcript,called_at,deal_id,call_id\n"
+    '89161234568,"Call back tomorrow",robot_callback,"Call me tomorrow at 3pm",2026-06-29T11:00:00+03:00,1002,call-002\n'
 ).encode("utf-8")
 
 
@@ -97,15 +102,22 @@ def test_execute_disabled_raises(db_session):
 def test_execute_positive_todo(db_session):
     from app.config import get_settings
 
-    imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
+    imp, row, settings, orch = _process_csv(db_session, HOT_ROW_CSV)
+    comment_actions = [
+        a for a in orch.repo.list_actions(imp.id)
+        if a.method == "crm.timeline.comment.add" and a.import_row_id == row.id
+    ]
+    assert len(comment_actions) == 1
     settings.call_results_bitrix_execution_enabled = True
     gw = FakeBitrixGateway()
     svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
     stats = svc.execute_import(imp.id)
-    assert stats["succeeded"] >= 1
+    assert stats["succeeded"] >= 2
     assert len(gw.todos) == 1
+    assert len(gw.comments) == 1
     todo_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "crm.activity.todo.add"]
     assert todo_actions[0].execution_status == "succeeded"
+    assert comment_actions[0].execution_status == "succeeded"
 
 
 def test_execute_idempotent_skip_succeeded(db_session):
@@ -119,6 +131,45 @@ def test_execute_idempotent_skip_succeeded(db_session):
     stats = svc.execute_import(imp.id)
     assert stats["skipped"] >= 1
     assert len(gw.todos) == 1
+    assert len(gw.comments) == 1
+
+
+def test_process_callback_later_adds_outcome_comment(db_session):
+    from app.config import get_settings
+    from app.services.call_results.row_disposition import get_row_disposition
+
+    imp, row, settings, orch = _process_csv(
+        db_session,
+        CALLBACK_ROW_CSV,
+        FakeCallResultClassifier([callback_later_result()]),
+    )
+    actions = orch.repo.list_actions(imp.id)
+    row_actions = [a for a in actions if a.import_row_id == row.id]
+    comment_actions = [a for a in row_actions if a.method == "crm.timeline.comment.add"]
+    assert comment_actions
+    assert get_row_disposition(row, row_actions) == "manual_call"
+
+
+def test_execute_callback_later_comment(db_session):
+    from app.config import get_settings
+
+    imp, row, settings, orch = _process_csv(
+        db_session,
+        CALLBACK_ROW_CSV,
+        FakeCallResultClassifier([callback_later_result()]),
+    )
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway()
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_row(row, imp)
+    assert stats["succeeded"] >= 2
+    assert len(gw.comments) == 1
+    retry_actions = [
+        a for a in svc.repo.list_actions(imp.id)
+        if a.import_row_id == row.id and a.method == "retry_queue.add"
+    ]
+    assert retry_actions
+    assert retry_actions[0].execution_status == "succeeded"
 
 
 def test_execute_refusal_comment(db_session):

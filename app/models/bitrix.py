@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -106,6 +107,15 @@ class CrmEntity(Base):
     __table_args__ = (
         UniqueConstraint("portal_id", "entity_type_id", "entity_id", name="uq_crm_entity"),
         Index("ix_crm_entities_portal_type_updated", "portal_id", "entity_type_id", "updated_time", "entity_id"),
+        Index(
+            "ix_crm_entities_export_filter",
+            "portal_id",
+            "entity_type_id",
+            "category_id",
+            "created_time",
+            "entity_id",
+            postgresql_where=text("is_deleted = false"),
+        ),
     )
 
 

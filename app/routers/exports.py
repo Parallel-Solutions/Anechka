@@ -26,13 +26,18 @@ from app.schemas import (
     ExportJobResponse,
     LprConfidenceSummary,
     MessageResponse,
+    PhoneExportHistoryItem,
+    PhoneExportHistoryResponse,
     RegionExportRequest,
     StageExportRequest,
     TomoruContactSelectionRequest,
     TomoruExportRequest,
 )
+from app.services.export_phone_registry import ExportPhoneRegistry
+from app.services.phone_service import normalize_phone
 from app.services.bitrix_client import BitrixClient
 from app.services.export_deals_service import ExportDealsService
+from app.services.intelligent_export.tomoru_stages import filter_stage_ids_for_category
 from app.services.tomoru_contact_preferences import set_deal as save_tomoru_contact_selection
 from app.services.job_service import JobService
 from app.services.json_export_service import build_json_from_xlsx, write_export_json
@@ -174,6 +179,9 @@ def _deals_result_to_response(result) -> ExportDealsResponse:
         truncated=result.truncated,
         lpr_summary=lpr_summary,
         lpr_view=result.lpr_view,  # type: ignore[arg-type]
+        scanned_total=result.scanned_total,
+        scan_complete=result.scan_complete,
+        has_more=result.has_more,
     )
 
 
@@ -187,6 +195,37 @@ def save_tomoru_deal_contact_selection(
     portal_id = resolve_portal_id(settings)
     save_tomoru_contact_selection(db, portal_id, deal_id, body.contact_ids)
     return Response(status_code=204)
+
+
+@router.get("/api/phones/export-history", response_model=PhoneExportHistoryResponse)
+def phone_export_history(
+    phone: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    portal_id = resolve_portal_id(settings)
+    if not normalize_phone(phone):
+        raise HTTPException(status_code=400, detail="Некорректный телефон")
+
+    normalized, items = ExportPhoneRegistry(db).lookup_export_history(portal_id, phone)
+    return PhoneExportHistoryResponse(
+        phone=phone,
+        normalized_phone=normalized,
+        items=[
+            PhoneExportHistoryItem(
+                export_job_id=item.export_job_id,
+                export_mode=item.export_mode,
+                job_mode=item.job_mode,
+                status=item.status,
+                created_at=item.created_at,
+                finished_at=item.finished_at,
+                deal_id=item.deal_id,
+                contact_id=item.contact_id,
+                parameters=item.parameters,
+            )
+            for item in items
+        ],
+    )
 
 
 @router.get("/api/tomoru/deals", response_model=ExportDealsResponse)
@@ -204,10 +243,19 @@ def tomoru_deals_preview(
     db: Session = Depends(get_db),
 ):
     settings = get_app_settings(db)
+    portal_id = resolve_portal_id(settings)
+    bitrix_client = BitrixClient(settings) if settings.bitrix_webhook_url else None
+    filtered_stage_ids = filter_stage_ids_for_category(
+        db,
+        portal_id,
+        category_id,
+        stage_id or None,
+        client=bitrix_client,
+    )
     result = ExportDealsService(db, settings).list_tomoru_deals(
         entity_type=entity_type,
         category_id=category_id,
-        stage_ids=stage_id or None,
+        stage_ids=filtered_stage_ids,
         region_ids=region_id or None,
         date_from=date_from,
         date_to=date_to,

@@ -265,6 +265,7 @@ class CallResultImportRow(Base):
     row_classifier_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     row_planner_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     execution_status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    operator_filter: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
 
     import_record: Mapped[CallResultImport] = relationship(back_populates="rows")
     actions: Mapped[list[BitrixPreparedAction]] = relationship(

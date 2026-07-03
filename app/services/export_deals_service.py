@@ -28,6 +28,7 @@ from app.services.intelligent_export.contact_phone_heuristic import (
     _deal_company_id,
     _deal_only_contacts,
     collect_deal_contacts,
+    collect_deal_contacts_batch,
     filter_non_archived_deals,
     pick_company_phone,
     pick_contact_for_deal,
@@ -61,6 +62,8 @@ TRUNCATION_NOTE_TEMPLATE = (
     "По фильтрам найдено {matched_total} сделок. "
     "В выгрузку и превью попадёт не более {export_limit} — уточните фильтры или уменьшите выборку."
 )
+TOMORU_SCAN_BATCH_SIZE = 200
+TOMORU_SCAN_NOTE_TEMPLATE = "Проверено {scanned} из {matched_total} сделок по фильтру."
 
 SAVED_SELECTION_REASON = "сохранённый выбор"
 
@@ -78,6 +81,9 @@ class ExportDealsResult:
     truncated: bool = False
     lpr_summary: dict[str, Any] | None = None
     lpr_view: str = "all"
+    scanned_total: int | None = None
+    scan_complete: bool = True
+    has_more: bool = False
 
 
 def _contact_to_preview(
@@ -90,15 +96,18 @@ def _contact_to_preview(
     selected_for_export: bool = False,
     selection_reason: str | None = None,
     selection_confidence: float | None = None,
+    phones: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     raw = contact.raw_payload or {}
     description = str(payload_lookup(raw, "COMMENTS") or "").strip() or None
     post = str(contact.post or contact.post_custom or "").strip() or None
     phone = contact.primary_phone
     if not phone:
-        phones = contact_repo.get_phones_for_contact(int(contact.contact_id))
-        if phones:
-            phone = phones[0].get("value")
+        phone_rows = phones
+        if phone_rows is None:
+            phone_rows = contact_repo.get_phones_for_contact(int(contact.contact_id))
+        if phone_rows:
+            phone = phone_rows[0].get("value")
     return {
         "contact_id": int(contact.contact_id),
         "full_name": contact.full_name or None,
@@ -120,11 +129,12 @@ def _company_for_deal(
     entity: CrmEntity,
     *,
     selected_for_export: bool = False,
+    company_entity: CrmEntity | None = None,
 ) -> dict[str, Any] | None:
     company_id = _deal_company_id(entity)
     if company_id is None:
         return None
-    company = CrmRepository(db, portal_id).get_entity(ENTITY_COMPANY, company_id)
+    company = company_entity or CrmRepository(db, portal_id).get_entity(ENTITY_COMPANY, company_id)
     if company is None:
         return None
     raw = company.raw_payload or {}
@@ -151,14 +161,18 @@ def _contacts_for_deal(
     saved_selection: list[int] | None = None,
     lpr_pick_cache: dict[int, CachedLprPick] | None = None,
     cache_dirty: list[bool] | None = None,
+    candidates: list[Any] | None = None,
+    phones_map: dict[int, list[dict[str, str]]] | None = None,
+    classifier: Any | None = None,
 ) -> list[dict[str, Any]]:
     contact_repo = ContactRepository(db, portal_id)
-    candidates = collect_deal_contacts(
-        db,
-        portal_id,
-        entity,
-        include_company_contacts=True,
-    )
+    if candidates is None:
+        candidates = collect_deal_contacts(
+            db,
+            portal_id,
+            entity,
+            include_company_contacts=True,
+        )
     chosen_id: int | None = None
     selection_reason: str | None = None
     selection_confidence: float | None = None
@@ -174,6 +188,7 @@ def _contacts_for_deal(
                 selected_for_export=c.contact_id in saved_ids,
                 selection_reason=SAVED_SELECTION_REASON if c.contact_id in saved_ids else None,
                 selection_confidence=CONFIDENCE_MANUAL if c.contact_id in saved_ids else None,
+                phones=(phones_map or {}).get(int(c.contact.contact_id)),
             )
             for c in candidates
         ]
@@ -189,15 +204,17 @@ def _contacts_for_deal(
             selection_reason = cached.reason
             selection_confidence = cached.confidence
         else:
-            classifier = build_lpr_classifier(
-                settings,
-                lpr_config,
-                use_llm=bool(settings.openai_api_key),
-            )
+            active_classifier = classifier
+            if active_classifier is None:
+                active_classifier = build_lpr_classifier(
+                    settings,
+                    lpr_config,
+                    use_llm=bool(settings.openai_api_key),
+                )
             chosen, selection_reason, selection_confidence = pick_contact_for_deal(
                 candidates,
                 lpr_config=lpr_config,
-                classifier=classifier,
+                classifier=active_classifier,
                 deal_title=deal_title,
             )
             if chosen is not None:
@@ -239,6 +256,7 @@ def _contacts_for_deal(
             selection_confidence=(
                 selection_confidence if chosen_id is not None and c.contact_id == chosen_id else None
             ),
+            phones=(phones_map or {}).get(int(c.contact.contact_id)),
         )
         for c in candidates
     ]
@@ -358,6 +376,79 @@ def _parse_date(value: Any) -> datetime | None:
         except ValueError:
             return None
     return None
+
+
+def _enrich_tomoru_entities(
+    db: Session,
+    portal_id: str,
+    entities: list[CrmEntity],
+    *,
+    settings: Settings,
+    lpr_config: LprConfig,
+    saved_overrides: dict[int, list[int]],
+    lpr_pick_cache: dict[int, CachedLprPick],
+    cache_dirty: list[bool],
+    stage_names: dict[str, str],
+    classifier: Any,
+) -> list[dict[str, Any]]:
+    if not entities:
+        return []
+    candidates_by_deal = collect_deal_contacts_batch(
+        db,
+        portal_id,
+        entities,
+        include_company_contacts=True,
+    )
+    contact_repo = ContactRepository(db, portal_id)
+    contact_ids = {
+        int(candidate.contact.contact_id)
+        for candidates in candidates_by_deal.values()
+        for candidate in candidates
+    }
+    phones_map = contact_repo.get_phones_for_contacts(sorted(contact_ids))
+    company_ids = sorted(
+        {
+            cid
+            for entity in entities
+            if (cid := _deal_company_id(entity)) is not None
+        }
+    )
+    companies = CrmRepository(db, portal_id).get_entities(ENTITY_COMPANY, company_ids)
+    deals: list[dict[str, Any]] = []
+    for entity in entities:
+        deal_id = int(entity.entity_id)
+        saved_selection = saved_overrides.get(deal_id)
+        contacts = _contacts_for_deal(
+            db,
+            portal_id,
+            entity,
+            settings=settings,
+            lpr_config=lpr_config,
+            saved_selection=saved_selection,
+            lpr_pick_cache=lpr_pick_cache,
+            cache_dirty=cache_dirty,
+            candidates=candidates_by_deal.get(deal_id, []),
+            phones_map=phones_map,
+            classifier=classifier,
+        )
+        company_id = _deal_company_id(entity)
+        company = _company_for_deal(
+            db,
+            portal_id,
+            entity,
+            selected_for_export=saved_selection is not None and 0 in saved_selection,
+            company_entity=companies.get(company_id) if company_id is not None else None,
+        )
+        deal = _entity_to_deal(
+            entity,
+            portal_id,
+            contacts=contacts,
+            company=company,
+            stage_names=stage_names,
+        )
+        if deal is not None:
+            deals.append(deal)
+    return deals
 
 
 class ExportDealsService:
@@ -620,11 +711,17 @@ class ExportDealsService:
                 note="Для выгрузки лидов список сделок недоступен",
             )
 
+        if mode == "region_lpr" and include_contacts:
+            return self._filter_tomoru_deals(
+                params,
+                offset=offset,
+                limit=limit,
+                lpr_view=lpr_view,
+                confidence_threshold=confidence_threshold,
+            )
+
         repo = CrmRepository(self.db, self.portal_id)
-        if mode == "region_lpr":
-            export_limit: int | None = None
-        else:
-            export_limit = int(params.get("limit") or self.settings.max_export_size)
+        export_limit = int(params.get("limit") or self.settings.max_export_size)
         category_id = params.get("category_id")
         region_field = params.get("region_field", "UF_CRM_5ECE25C5D78E0")
         date_from, date_to = _date_range_bounds(
@@ -643,7 +740,7 @@ class ExportDealsService:
             date_to=date_to,
             exclude_stage_ids=exclude_stage_ids or None,
         )
-        truncated = export_limit is not None and matched_total > export_limit
+        truncated = matched_total > export_limit
         entities = repo.list_entities_for_export(
             ENTITY_DEAL,
             category_id=category_id,
@@ -657,106 +754,215 @@ class ExportDealsService:
             limit=export_limit,
             exclude_stage_ids=exclude_stage_ids or None,
         )
-        entities = self._exclude_archived_entities(
-            entities,
+        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
+        if not has_stage_filter:
+            entities = self._exclude_archived_entities(
+                entities,
+                category_id=category_id,
+            )
+        stage_names = build_stage_names_map(
+            self.db,
+            self.portal_id,
             category_id=category_id,
         )
-        lpr_config = load_lpr_config(self.db) if include_contacts else None
-        saved_overrides = (
-            load_tomoru_contact_overrides(self.db, self.portal_id) if include_contacts else {}
+        build_entities = entities[offset : offset + limit]
+        all_deals: list[dict[str, Any]] = []
+        for entity in build_entities:
+            deal = _entity_to_deal(entity, self.portal_id, stage_names=stage_names)
+            if deal is not None:
+                all_deals.append(deal)
+        note = FILTER_NOTE
+        if truncated:
+            note = f"{TRUNCATION_NOTE_TEMPLATE.format(matched_total=matched_total, export_limit=export_limit)} {note}"
+
+        return ExportDealsResult(
+            total=len(entities),
+            deals=all_deals,
+            available=True,
+            source="filter",
+            offset=offset,
+            limit=limit,
+            note=note,
+            matched_total=matched_total,
+            truncated=truncated,
+            has_more=offset + len(all_deals) < len(entities),
         )
-        lpr_pick_cache = load_all(self.db, self.portal_id) if include_contacts else {}
+
+    def _filter_tomoru_deals(
+        self,
+        params: dict[str, Any],
+        *,
+        offset: int,
+        limit: int,
+        lpr_view: str,
+        confidence_threshold: float,
+    ) -> ExportDealsResult:
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+        repo = CrmRepository(self.db, self.portal_id)
+        category_id = params.get("category_id")
+        region_field = params.get("region_field", "UF_CRM_5ECE25C5D78E0")
+        date_from, date_to = _date_range_bounds(
+            params.get("date_from"), params.get("date_to")
+        )
+        exclude_stage_ids = self._export_archive_stage_ids(category_id)
+        export_query = {
+            "category_id": category_id,
+            "stage_id": params.get("stage_id"),
+            "stage_ids": params.get("stage_ids"),
+            "region_id": params.get("region_id"),
+            "region_ids": params.get("region_ids"),
+            "region_field": region_field,
+            "date_from": date_from,
+            "date_to": date_to,
+            "exclude_stage_ids": exclude_stage_ids or None,
+        }
+        matched_total = repo.count_entities_for_export(ENTITY_DEAL, **export_query)
+        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
+        lpr_config = load_lpr_config(self.db)
+        saved_overrides = load_tomoru_contact_overrides(self.db, self.portal_id)
+        lpr_pick_cache = load_all(self.db, self.portal_id)
         cache_dirty = [False]
         stage_names = build_stage_names_map(
             self.db,
             self.portal_id,
             category_id=category_id,
         )
-        build_entities = entities if include_contacts else entities[offset : offset + limit]
-        all_deals: list[dict[str, Any]] = []
-        for entity in build_entities:
-            deal_id = int(entity.entity_id)
-            saved_selection = (
-                saved_overrides[deal_id] if deal_id in saved_overrides else None
+        classifier = build_lpr_classifier(
+            self.settings,
+            lpr_config,
+            use_llm=bool(self.settings.openai_api_key),
+        )
+        threshold = max(0.0, min(100.0, confidence_threshold))
+        note = f"{FILTER_NOTE} {TOMORU_CONTACTS_NOTE}"
+
+        if lpr_view == "all":
+            entities = repo.list_entities_for_export(
+                ENTITY_DEAL,
+                **export_query,
+                offset=offset,
+                limit=limit,
             )
-            contacts = (
-                _contacts_for_deal(
-                    self.db,
-                    self.portal_id,
-                    entity,
-                    settings=self.settings,
-                    lpr_config=lpr_config,
-                    saved_selection=saved_selection,
-                    lpr_pick_cache=lpr_pick_cache,
-                    cache_dirty=cache_dirty,
+            if not has_stage_filter:
+                entities = self._exclude_archived_entities(
+                    entities,
+                    category_id=category_id,
                 )
-                if include_contacts
-                else None
-            )
-            company = (
-                _company_for_deal(
-                    self.db,
-                    self.portal_id,
-                    entity,
-                    selected_for_export=(
-                        saved_selection is not None and 0 in saved_selection
-                    ),
-                )
-                if include_contacts
-                else None
-            )
-            deal = _entity_to_deal(
-                entity,
+            page = _enrich_tomoru_entities(
+                self.db,
                 self.portal_id,
-                contacts=contacts,
-                company=company,
+                entities,
+                settings=self.settings,
+                lpr_config=lpr_config,
+                saved_overrides=saved_overrides,
+                lpr_pick_cache=lpr_pick_cache,
+                cache_dirty=cache_dirty,
                 stage_names=stage_names,
+                classifier=classifier,
             )
-            if deal is not None:
-                all_deals.append(deal)
-        if include_contacts and cache_dirty[0]:
+            if cache_dirty[0]:
+                save_all(self.db, self.portal_id, lpr_pick_cache)
+            has_more = offset + len(page) < matched_total
+            return ExportDealsResult(
+                total=matched_total,
+                deals=page,
+                available=True,
+                source="filter",
+                offset=offset,
+                limit=limit,
+                note=note,
+                matched_total=matched_total,
+                truncated=False,
+                lpr_summary=_compute_lpr_summary(page, threshold),
+                lpr_view="all",
+                scanned_total=matched_total,
+                scan_complete=True,
+                has_more=has_more,
+            )
+
+        uncertain_page: list[dict[str, Any]] = []
+        skipped = offset
+        sql_offset = 0
+        scanned = 0
+        max_scan = self.settings.max_export_size
+        batch_size = TOMORU_SCAN_BATCH_SIZE
+        scan_complete = False
+        has_more = False
+        uncertain_total = 0
+
+        while len(uncertain_page) < limit and scanned < max_scan:
+            raw_batch = repo.list_entities_for_export(
+                ENTITY_DEAL,
+                **export_query,
+                offset=sql_offset,
+                limit=batch_size,
+            )
+            if not raw_batch:
+                scan_complete = True
+                break
+            batch = raw_batch
+            if not has_stage_filter:
+                batch = self._exclude_archived_entities(
+                    batch,
+                    category_id=category_id,
+                )
+            scanned += len(batch)
+            enriched = _enrich_tomoru_entities(
+                self.db,
+                self.portal_id,
+                batch,
+                settings=self.settings,
+                lpr_config=lpr_config,
+                saved_overrides=saved_overrides,
+                lpr_pick_cache=lpr_pick_cache,
+                cache_dirty=cache_dirty,
+                stage_names=stage_names,
+                classifier=classifier,
+            )
+            for deal in enriched:
+                if not _is_uncertain_deal(deal.get("lpr_confidence"), threshold):
+                    continue
+                uncertain_total += 1
+                if skipped > 0:
+                    skipped -= 1
+                    continue
+                if len(uncertain_page) < limit:
+                    uncertain_page.append(deal)
+            sql_offset += len(raw_batch)
+            if len(uncertain_page) >= limit:
+                scan_complete = sql_offset >= matched_total
+                has_more = not scan_complete
+                break
+            if len(raw_batch) < batch_size:
+                scan_complete = True
+                break
+
+        if scanned >= max_scan and sql_offset < matched_total:
+            note = f"{TOMORU_SCAN_NOTE_TEMPLATE.format(scanned=scanned, matched_total=matched_total)} {note}"
+        if cache_dirty[0]:
             save_all(self.db, self.portal_id, lpr_pick_cache)
-        note = FILTER_NOTE
-        if include_contacts:
-            note = f"{FILTER_NOTE} {TOMORU_CONTACTS_NOTE}"
-        if truncated:
-            note = f"{TRUNCATION_NOTE_TEMPLATE.format(matched_total=matched_total, export_limit=export_limit)} {note}"
 
-        lpr_summary: dict[str, Any] | None = None
-        page: list[dict[str, Any]]
-        result_offset = offset
-        result_limit = limit
-        result_total = len(entities)
-
-        if include_contacts:
-            threshold = max(0.0, min(100.0, confidence_threshold))
-            lpr_summary = _compute_lpr_summary(all_deals, threshold)
-            if lpr_view == "uncertain":
-                page = [
-                    d
-                    for d in all_deals
-                    if _is_uncertain_deal(d.get("lpr_confidence"), threshold)
-                ]
-                result_total = len(page)
-                result_offset = 0
-                result_limit = max(result_total, 1)
-            else:
-                page = all_deals[offset : offset + limit]
+        if scan_complete:
+            has_more = offset + len(uncertain_page) < uncertain_total
+            result_total = uncertain_total
         else:
-            page = all_deals
+            result_total = offset + len(uncertain_page) + (1 if has_more else 0)
 
         return ExportDealsResult(
             total=result_total,
-            deals=page,
+            deals=uncertain_page,
             available=True,
             source="filter",
-            offset=result_offset,
-            limit=result_limit,
+            offset=offset,
+            limit=limit,
             note=note,
             matched_total=matched_total,
-            truncated=truncated,
-            lpr_summary=lpr_summary,
-            lpr_view=lpr_view if include_contacts else "all",
+            truncated=scanned >= max_scan and not scan_complete,
+            lpr_summary=None,
+            lpr_view="uncertain",
+            scanned_total=scanned,
+            scan_complete=scan_complete,
+            has_more=has_more,
         )
 
     def _filter_category_full(

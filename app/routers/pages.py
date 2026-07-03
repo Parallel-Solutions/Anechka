@@ -74,6 +74,11 @@ def tomoru_export_page(request: Request, db: Session = Depends(get_db)):
     return _tomoru_export_page(request, db)
 
 
+@router.get("/instruction", response_class=HTMLResponse)
+def instruction_page(request: Request):
+    return templates.TemplateResponse(request, "instruction.html", {})
+
+
 @router.get("/legacy-export", response_class=HTMLResponse)
 def legacy_export_page(request: Request, db: Session = Depends(get_db)):
     settings = get_app_settings(db)

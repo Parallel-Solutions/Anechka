@@ -298,6 +298,16 @@ class BitrixActionPlanner:
             a.payload["_group_id"] = group_id
         return actions
 
+    def plan_outcome_comment(self, *, sort_order: int) -> PlannedAction:
+        return PlannedAction(
+            method="crm.timeline.comment.add",
+            action_type="timeline_comment",
+            operation_type="bitrix_add_comment",
+            payload={},
+            human_summary="Комментарий: результат обзвона",
+            sort_order=sort_order,
+        )
+
     @staticmethod
     def _append(actions: list[PlannedAction], action: PlannedAction) -> int:
         actions.append(action)

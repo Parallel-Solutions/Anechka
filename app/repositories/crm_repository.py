@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import String, cast, func, or_, select, update
+from sqlalchemy import String, and_, cast, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.services.export_plan.payload_keys import camel_key
 from app.services.intelligent_export.contact_phone_heuristic import TOMORU_REGION_FIELD
-from app.services.intelligent_export.kp_legacy_stages import legacy_kp_stage_ids
+from app.services.intelligent_export.kp_legacy_stages import KP_CATEGORY_ID, legacy_kp_stage_ids
 from app.utils.datetime_utils import parse_bitrix_datetime
 from app.utils.hash_utils import definition_hash, payload_hash
 
@@ -68,8 +68,18 @@ def _build_export_entities_query(
     date_to: datetime | None = None,
     is_deleted: bool = False,
     exclude_stage_ids: list[str] | None = None,
+    db: Session | None = None,
 ):
     effective_stage_ids = _resolve_stage_ids(stage_id, stage_ids)
+    if effective_stage_ids and db is not None and category_id is not None:
+        from app.services.intelligent_export.tomoru_stages import resolve_query_stage_ids
+
+        effective_stage_ids = resolve_query_stage_ids(
+            db,
+            portal_id,
+            category_id,
+            effective_stage_ids,
+        )
     effective_region_ids = _resolve_region_ids(region_id, region_ids)
 
     q = select(CrmEntity).where(
@@ -80,7 +90,20 @@ def _build_export_entities_query(
     if effective_stage_ids:
         q = q.where(CrmEntity.stage_id.in_(effective_stage_ids))
     if category_id is not None:
-        q = q.where(CrmEntity.category_id == category_id)
+        if category_id == KP_CATEGORY_ID and db is not None:
+            legacy_ids = list(legacy_kp_stage_ids(db, portal_id))
+            legacy_stage_filter = effective_stage_ids or legacy_ids
+            q = q.where(
+                or_(
+                    CrmEntity.category_id == category_id,
+                    and_(
+                        or_(CrmEntity.category_id.is_(None), CrmEntity.category_id == 0),
+                        CrmEntity.stage_id.in_(legacy_stage_filter),
+                    ),
+                )
+            )
+        else:
+            q = q.where(CrmEntity.category_id == category_id)
     if effective_region_ids:
         camel = camel_key(region_field)
         region_conditions = []
@@ -651,6 +674,7 @@ class CrmRepository:
             date_to=date_to,
             is_deleted=is_deleted,
             exclude_stage_ids=exclude_stage_ids,
+            db=self.db,
         )
         return int(self.db.scalar(select(func.count()).select_from(q.subquery())) or 0)
 
@@ -666,6 +690,7 @@ class CrmRepository:
         region_field: str = TOMORU_REGION_FIELD,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
+        offset: int = 0,
         limit: int | None = None,
         is_deleted: bool = False,
         exclude_stage_ids: list[str] | None = None,
@@ -683,11 +708,28 @@ class CrmRepository:
             date_to=date_to,
             is_deleted=is_deleted,
             exclude_stage_ids=exclude_stage_ids,
+            db=self.db,
         )
         q = q.order_by(CrmEntity.entity_id.asc())
+        if offset:
+            q = q.offset(offset)
         if limit is not None:
             q = q.limit(limit)
         return list(self.db.scalars(q))
+
+    def get_entities(
+        self, entity_type_id: int, entity_ids: list[int]
+    ) -> dict[int, CrmEntity]:
+        if not entity_ids:
+            return {}
+        rows = self.db.scalars(
+            select(CrmEntity).where(
+                CrmEntity.portal_id == self.portal_id,
+                CrmEntity.entity_type_id == entity_type_id,
+                CrmEntity.entity_id.in_(entity_ids),
+            )
+        ).all()
+        return {int(row.entity_id): row for row in rows}
 
     def get_entity(self, entity_type_id: int, entity_id: int) -> CrmEntity | None:
         return self.db.scalar(

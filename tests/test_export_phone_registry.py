@@ -79,3 +79,39 @@ def test_lookup_legacy_ten_digit_normalized_phone(db_session):
     found = ExportPhoneRegistry(db_session).lookup(PORTAL, "73477220403")
     assert len(found) == 1
     assert found[0].deal_id == 9001
+
+
+def test_lookup_export_history_joins_jobs(db_session):
+    job = ExportJob(
+        mode="region_lpr",
+        status="completed",
+        parameters_json='{"region_id": 77, "region_name": "Москва"}',
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    registry = ExportPhoneRegistry(db_session)
+    registry.save_entries(
+        PORTAL,
+        job.id,
+        "region_lpr",
+        [ExportPhoneRow(phone="89161112233", deal_id=1001, contact_id=50)],
+    )
+    db_session.commit()
+
+    normalized, items = registry.lookup_export_history(PORTAL, "79161112233")
+    assert normalized == "79161112233"
+    assert len(items) == 1
+    assert items[0].export_job_id == job.id
+    assert items[0].export_mode == "region_lpr"
+    assert items[0].job_mode == "region_lpr"
+    assert items[0].status == "completed"
+    assert items[0].deal_id == 1001
+    assert items[0].contact_id == 50
+    assert items[0].parameters["region_name"] == "Москва"
+
+
+def test_lookup_export_history_empty(db_session):
+    normalized, items = ExportPhoneRegistry(db_session).lookup_export_history(PORTAL, "79990001122")
+    assert normalized == "79990001122"
+    assert items == []

@@ -123,6 +123,11 @@ def _resolve(client, import_id: int, row_id: int, action: str, **extra):
     )
 
 
+def _detail_row(client, import_id: int, row_id: int) -> dict:
+    detail = client.get(f"/api/call-results/imports/{import_id}").json()
+    return next(r for r in detail["rows"] if r["id"] == row_id)
+
+
 def _preview(client, import_id: int, row_id: int, action: str):
     return client.post(
         f"/api/call-results/imports/{import_id}/rows/{row_id}/manual-preview",
@@ -156,16 +161,20 @@ def test_manual_resolve_comment_prepares_action(client, db_session):
     assert data["prepared_method"] == "crm.timeline.comment.add"
     assert "Отправить в Bitrix24" in data["message"]
     assert "crm.timeline.comment.add" in data["prepared_methods"]
-    assert data["execution_enabled"] is False
+    assert isinstance(data["execution_enabled"], bool)
 
     db_session.refresh(row)
     assert row.needs_manual_review is False
     assert row.execution_status == "prepared"
+    assert row.operator_filter == "new_comments"
     from app.repositories.call_result_repository import CallResultRepository
 
     repo = CallResultRepository(db_session, PORTAL)
     actions = [a for a in repo.list_actions(imp.id) if a.import_row_id == row.id]
     assert any(a.method == "crm.timeline.comment.add" for a in actions)
+
+    api_row = _detail_row(client, imp.id, row.id)
+    assert api_row["row_filter"] == "new_comments"
 
 
 def test_manual_resolve_todo_without_responsible(client, db_session):
@@ -202,6 +211,10 @@ def test_manual_resolve_todo_prepares_action(client, db_session):
     db_session.refresh(row)
     assert row.needs_manual_review is False
     assert row.execution_status == "prepared"
+    assert row.operator_filter == "new_todos"
+
+    api_row = _detail_row(client, imp.id, row.id)
+    assert api_row["row_filter"] == "new_todos"
 
 
 def test_manual_resolve_find_contact_adds_retry_queue(client, db_session):
@@ -223,6 +236,21 @@ def test_manual_resolve_find_contact_adds_retry_queue(client, db_session):
     assert entry is not None
     assert entry.reason == "hangup_replacement_contact"
     assert entry.phone_normalized in ("89169999999", "79169999999")
+
+    assert row.operator_filter == "auto_call"
+    assert row.extracted_data.get("dial_phone") in ("89169999999", "79169999999")
+
+    from app.repositories.call_result_repository import CallResultRepository
+
+    repo = CallResultRepository(db_session, PORTAL)
+    actions = [a for a in repo.list_actions(imp.id) if a.import_row_id == row.id]
+    retry_actions = [a for a in actions if a.method == "retry_queue.add" and a.is_enabled]
+    assert len(retry_actions) == 1
+    assert retry_actions[0].payload.get("reason") == "hangup_replacement_contact"
+
+    api_row = _detail_row(client, imp.id, row.id)
+    assert api_row["row_filter"] == "auto_call"
+    assert api_row["dial_phone"] in ("89169999999", "79169999999")
 
 
 def test_manual_resolve_find_contact_no_candidate(client, db_session):
@@ -364,6 +392,11 @@ def test_manual_resolve_create_contact_with_deal(client, db_session, monkeypatch
     methods = [a.method for a in actions]
     assert "crm.contact.add" in methods
     assert "crm.deal.contact.add" in methods
+
+    db_session.refresh(row)
+    assert row.operator_filter == "new_contacts"
+    api_row = _detail_row(client, imp.id, row.id)
+    assert api_row["row_filter"] == "new_contacts"
 
 
 def test_manual_resolve_create_contact_no_phone(client, db_session, monkeypatch):

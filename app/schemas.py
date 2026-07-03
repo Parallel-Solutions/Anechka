@@ -165,6 +165,24 @@ class UserItem(BaseModel):
     name: str
 
 
+class PhoneExportHistoryItem(BaseModel):
+    export_job_id: int
+    export_mode: str
+    job_mode: str
+    status: str
+    created_at: datetime
+    finished_at: datetime | None
+    deal_id: int
+    contact_id: int | None
+    parameters: dict[str, Any]
+
+
+class PhoneExportHistoryResponse(BaseModel):
+    phone: str
+    normalized_phone: str | None
+    items: list[PhoneExportHistoryItem]
+
+
 class ExportJobResponse(BaseModel):
     id: int
     mode: str
@@ -246,11 +264,24 @@ class ExportDealsResponse(BaseModel):
     truncated: bool = False
     lpr_summary: LprConfidenceSummary | None = None
     lpr_view: Literal["all", "uncertain"] = "all"
+    scanned_total: int | None = None
+    scan_complete: bool = True
+    has_more: bool = False
 
 
 class ConnectionTestResponse(BaseModel):
     ok: bool
     message: str
+
+
+class BitrixTestRequest(BaseModel):
+    deal_id: int = Field(gt=0)
+
+
+class BitrixTestResponse(BaseModel):
+    ok: bool
+    message: str
+    external_id: str | None = None
 
 
 class MessageResponse(BaseModel):

@@ -32,7 +32,10 @@ from app.services.intelligent_export.contact_phone_heuristic import (
     pick_phone_for_deal,
 )
 from app.services.export_plan.models_v2 import SheetPostProcess
-from app.services.intelligent_export.tomoru_stages import resolve_archive_stage_ids
+from app.services.intelligent_export.tomoru_stages import (
+    filter_stage_ids_for_category,
+    resolve_archive_stage_ids,
+)
 from app.services.json_export_service import build_export_payload, write_export_json
 from app.services.lpr_service import LprConfig, contact_to_lpr_dict, detect_lpr
 from app.services.tomoru_contact_preferences import (
@@ -236,15 +239,15 @@ class LprTomoruService:
 
     def _run_db_deals(self, params: dict[str, Any]) -> str:
         category_id = int(params.get("category_id") or 15)
-        stage_ids = _filter_stage_ids(params)
+        raw_stage_ids = _filter_stage_ids(params)
         region_ids = _filter_region_ids(params)
         region_names = _filter_region_names(params)
         date_from, date_to = _date_range_bounds(params.get("date_from"), params.get("date_to"))
 
         crm_repo = CrmRepository(self.db, self.portal_id)
         description_parts = [f"воронка {category_id}", "из локальной БД"]
-        if stage_ids:
-            description_parts.append("стадии " + ", ".join(stage_ids))
+        if raw_stage_ids:
+            description_parts.append("стадии " + ", ".join(raw_stage_ids))
         if region_ids:
             region_labels = []
             for idx, rid in enumerate(region_ids):
@@ -263,6 +266,17 @@ class LprTomoruService:
         bitrix_client = None
         if self.settings.bitrix_webhook_url:
             bitrix_client = BitrixClient(self.settings)
+        stage_ids = (
+            filter_stage_ids_for_category(
+                self.db,
+                self.portal_id,
+                category_id,
+                raw_stage_ids,
+                client=bitrix_client,
+            )
+            if raw_stage_ids
+            else None
+        )
         archive_stage_ids = resolve_archive_stage_ids(
             self.db,
             self.portal_id,
@@ -293,11 +307,12 @@ class LprTomoruService:
         )
         if not deals:
             raise ExportValidationError("По указанным фильтрам сделки не найдены в локальной БД")
-        before_archive_filter = len(deals)
-        deals = filter_non_archived_deals(deals, archive_stage_ids=archive_stage_ids)
-        skipped_archived = before_archive_filter - len(deals)
-        if skipped_archived:
-            self._log(f"Пропущено архивных сделок: {skipped_archived}")
+        if not stage_ids:
+            before_archive_filter = len(deals)
+            deals = filter_non_archived_deals(deals, archive_stage_ids=archive_stage_ids)
+            skipped_archived = before_archive_filter - len(deals)
+            if skipped_archived:
+                self._log(f"Пропущено архивных сделок: {skipped_archived}")
         if not deals:
             raise ExportValidationError("По указанным фильтрам сделки не найдены в локальной БД")
 

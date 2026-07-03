@@ -46,6 +46,63 @@ def test_refusal_comment_payload():
     payload = BitrixPayloadBuilder().build(pa, row, bitrix_deal_id=1001, assigned_by_id=42, service_user_id=1)
     assert payload["fields"]["ENTITY_ID"] == 1001
     assert "Отказ" in payload["fields"]["COMMENT"]
+    assert "primary_outcome" not in payload["fields"]["COMMENT"]
+
+
+def test_positive_comment_payload():
+    row = _row(
+        primary_outcome="positive",
+        business_signals={"positive": True, "summary": "Нужно КП"},
+        called_at=datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc),
+    )
+    pa = PlannedAction(
+        method="crm.timeline.comment.add",
+        action_type="timeline_comment",
+        operation_type="bitrix_add_comment",
+        payload={},
+        human_summary="",
+    )
+    payload = BitrixPayloadBuilder().build(pa, row, bitrix_deal_id=1001, assigned_by_id=42, service_user_id=1)
+    assert "Положительный результат" in payload["fields"]["COMMENT"]
+    assert "Нужно КП" in payload["fields"]["COMMENT"]
+
+
+def test_callback_later_comment_payload():
+    cb = datetime(2026, 6, 30, 12, 0, tzinfo=timezone.utc)
+    row = _row(
+        primary_outcome="callback_later",
+        callback_at=cb,
+        business_signals={"callback_later_requested": True, "summary": "Перезвонить завтра"},
+        called_at=datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc),
+    )
+    pa = PlannedAction(
+        method="crm.timeline.comment.add",
+        action_type="timeline_comment",
+        operation_type="bitrix_add_comment",
+        payload={},
+        human_summary="",
+    )
+    payload = BitrixPayloadBuilder().build(pa, row, bitrix_deal_id=1001, assigned_by_id=42, service_user_id=1)
+    comment = payload["fields"]["COMMENT"]
+    assert "Запрос перезвона" in comment
+    assert "Запрошенный перезвон:" in comment
+
+
+def test_hangup_comment_payload():
+    row = _row(
+        primary_outcome="hangup",
+        business_signals={"hangup_without_result": True, "summary": "Сбросили"},
+        called_at=datetime(2026, 6, 29, 10, 0, tzinfo=timezone.utc),
+    )
+    pa = PlannedAction(
+        method="crm.timeline.comment.add",
+        action_type="timeline_comment",
+        operation_type="bitrix_add_comment",
+        payload={},
+        human_summary="",
+    )
+    payload = BitrixPayloadBuilder().build(pa, row, bitrix_deal_id=1001, assigned_by_id=42, service_user_id=1)
+    assert "Сброс / нет результата" in payload["fields"]["COMMENT"]
 
 
 def test_tasks_forbidden():

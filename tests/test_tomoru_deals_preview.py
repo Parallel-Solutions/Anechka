@@ -150,6 +150,37 @@ def test_api_tomoru_deals_includes_stage_name(client, db_session):
     assert deal["stage_name"] == "Новая"
 
 
+def test_api_tomoru_deals_stage_name_bitrix_fallback(client, db_session):
+    from unittest.mock import patch
+
+    portal = _portal()
+    deal_id = 831
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Warm deal",
+            category_id=15,
+            stage_id="C15:4",
+            payload_hash="h831",
+            raw_payload={"id": deal_id, "title": "Warm deal", "closed": "N"},
+        )
+    )
+    db_session.commit()
+
+    with patch(
+        "app.services.intelligent_export.tomoru_stages._try_load_stages_from_bitrix",
+        return_value=[{"id": "C15:4", "name": "Тёплый", "category_id": 15}],
+    ):
+        resp = client.get("/api/tomoru/deals?category_id=15&stage_id=C15:4")
+
+    assert resp.status_code == 200
+    deal = next(d for d in resp.json()["deals"] if d["deal_id"] == deal_id)
+    assert deal["stage_id"] == "C15:4"
+    assert deal["stage_name"] == "Тёплый"
+
+
 def test_api_tomoru_deals_without_company_returns_null(client, db_session):
     portal = _portal()
     deal_id = 821
@@ -530,6 +561,10 @@ def test_tomoru_export_page_has_filters(client):
     assert 'id="date_to"' in resp.text
     assert 'id="date_range"' not in resp.text
     assert 'flatpickr' in resp.text.lower()
+    assert "allowInput: true" in resp.text
+    assert "function attachIsoDateMask(" in resp.text
+    assert "ГГГГ-ММ-ДД" in resp.text
+    assert 'maxlength="10"' in resp.text
 
     assert "tom-select" in resp.text.lower()
     assert 'id="stage-wrap"' in resp.text
@@ -554,6 +589,8 @@ def test_tomoru_export_page_has_filters(client):
     assert "function parseFiltersFromUrl()" in resp.text
     assert "function navigateFilters(" in resp.text
     assert "function buildUrlFromFilters(" in resp.text
+    assert "function sanitizeFilterState(" in resp.text
+    assert "sanitizeFilterState(parseFiltersFromUrl())" in resp.text
     assert "addEventListener('popstate'" in resp.text
     assert "async function initPage()" in resp.text
     assert "history.pushState" in resp.text
@@ -915,14 +952,353 @@ def test_tomoru_deals_uncertain_view_filters_low_confidence(client, db_session, 
 
     resp = client.get(
         "/api/tomoru/deals?category_id=15&stage_id=C15:UNCERT_TEST"
-        "&lpr_view=uncertain&confidence_threshold=70&offset=50&page_size=1"
+        "&lpr_view=uncertain&confidence_threshold=70&offset=0&page_size=1"
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["lpr_view"] == "uncertain"
-    assert data["total"] == 1
     assert data["offset"] == 0
     assert len(data["deals"]) == 1
     assert data["deals"][0]["deal_id"] == 982
     assert data["deals"][0]["lpr_confidence"] == 30.0
-    assert data["lpr_summary"]["confident_percent"] == 50.0
+    assert data["lpr_summary"] is None
+    assert data["scan_complete"] is True
+    assert data["has_more"] is False
+
+    resp_page2 = client.get(
+        "/api/tomoru/deals?category_id=15&stage_id=C15:UNCERT_TEST"
+        "&lpr_view=uncertain&confidence_threshold=70&offset=1&page_size=1"
+    )
+    assert resp_page2.status_code == 200
+    page2 = resp_page2.json()
+    assert page2["offset"] == 1
+    assert page2["deals"] == []
+
+
+def test_tomoru_deals_uncertain_pagination_skips_via_offset(client, db_session, monkeypatch):
+    from app.services.intelligent_export.contact_lpr_classifier import KeywordLprClassifier
+
+    monkeypatch.setattr(
+        "app.services.export_deals_service.build_lpr_classifier",
+        lambda settings, lpr_config, use_llm=True: KeywordLprClassifier(lpr_config),
+    )
+    portal = _portal()
+    repo = ContactRepository(db_session, portal)
+    for deal_id, contact_ids in (
+        (990, (9901, 9902)),
+        (991, (9911, 9912)),
+    ):
+        _add_deal_with_contact(db_session, portal, deal_id, contact_ids[0], "Менеджер")
+        repo.upsert_contact(
+            contact_ids[1],
+            {"full_name": f"Contact {contact_ids[1]}", "post": "Специалист"},
+            raw_payload={
+                "id": contact_ids[1],
+                "POST": "Специалист",
+                "DATE_CREATE": "2024-01-01T10:00:00+03:00",
+            },
+        )
+        repo.upsert_link(contact_ids[1], ENTITY_DEAL, deal_id, is_primary=False)
+    _add_deal_with_contact(db_session, portal, 992, 9921, "Генеральный директор")
+    db_session.commit()
+
+    resp = client.get(
+        "/api/tomoru/deals?category_id=15&stage_id=C15:UNCERT_TEST"
+        "&lpr_view=uncertain&confidence_threshold=70&offset=1&page_size=1"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["deals"]) == 1
+    assert data["deals"][0]["deal_id"] == 991
+    assert data["has_more"] is False
+    assert data["scan_complete"] is True
+
+
+def test_tomoru_deals_all_view_does_not_load_all_entities(client, db_session, monkeypatch):
+    from app.services.intelligent_export.contact_lpr_classifier import KeywordLprClassifier
+
+    monkeypatch.setattr(
+        "app.services.export_deals_service.build_lpr_classifier",
+        lambda settings, lpr_config, use_llm=True: KeywordLprClassifier(lpr_config),
+    )
+    portal = _portal()
+    for deal_id in range(1000, 1010):
+        _add_deal_with_contact(
+            db_session,
+            portal,
+            deal_id,
+            deal_id * 10 + 1,
+            "Генеральный директор",
+            stage_id="C15:PAGINATE",
+        )
+    db_session.commit()
+
+    calls: list[dict] = []
+    original = __import__(
+        "app.repositories.crm_repository", fromlist=["CrmRepository"]
+    ).CrmRepository.list_entities_for_export
+
+    def spy_list_entities_for_export(self, entity_type_id, **kwargs):
+        calls.append(kwargs)
+        return original(self, entity_type_id, **kwargs)
+
+    monkeypatch.setattr(
+        "app.repositories.crm_repository.CrmRepository.list_entities_for_export",
+        spy_list_entities_for_export,
+    )
+
+    resp = client.get(
+        "/api/tomoru/deals?category_id=15&stage_id=C15:PAGINATE"
+        "&lpr_view=all&offset=0&page_size=3"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["deals"]) == 3
+    assert calls
+    assert calls[0].get("limit") == 3
+    assert calls[0].get("offset") == 0
+
+
+def _seed_category_11_stages(db_session, portal: str) -> None:
+    dictionary = CrmDictionary(
+        portal_id=portal,
+        entity_type_id=ENTITY_DEAL,
+        dictionary_code="status_DEAL_STAGE_11",
+        source_type="crm.status",
+        is_active=True,
+    )
+    db_session.add(dictionary)
+    db_session.flush()
+    db_session.add(
+        CrmDictionaryEntry(
+            dictionary_id=dictionary.id,
+            external_id="C11:NEW",
+            raw_value="Новая",
+            is_active=True,
+        )
+    )
+
+
+def test_api_tomoru_deals_ignores_foreign_stage_for_other_category(client, db_session):
+    portal = _portal()
+    _seed_category_11_stages(db_session, portal)
+    deal_id = 11001
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Other funnel deal",
+            category_id=11,
+            stage_id="C11:NEW",
+            payload_hash="h11001",
+            created_time=datetime(2024, 6, 10, 12, 0, tzinfo=timezone.utc),
+            raw_payload={"id": deal_id, "title": "Other funnel deal", "closed": "N"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=11&stage_id=C15:NEW")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert deal_id in ids
+
+
+def test_api_tomoru_deals_filters_other_category_by_date(client, db_session):
+    portal = _portal()
+    deal_id = 11002
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Other funnel dated deal",
+            category_id=11,
+            stage_id="C11:WORK",
+            payload_hash="h11002",
+            created_time=datetime(2024, 7, 1, 10, 0, tzinfo=timezone.utc),
+            raw_payload={"id": deal_id, "title": "Other funnel dated deal", "closed": "N"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=11&date_from=2024-06-01")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert ids == {deal_id}
+
+
+def _seed_kp_stage_dictionary(db_session, portal, entries: list[tuple[str, str]]):
+    dictionary = CrmDictionary(
+        portal_id=portal,
+        entity_type_id=ENTITY_DEAL,
+        dictionary_code="status_DEAL_STAGE_15",
+        source_type="crm.status",
+        is_active=True,
+    )
+    db_session.add(dictionary)
+    db_session.flush()
+    for external_id, raw_value in entries:
+        db_session.add(
+            CrmDictionaryEntry(
+                dictionary_id=dictionary.id,
+                external_id=external_id,
+                raw_value=raw_value,
+                is_active=True,
+            )
+        )
+    return dictionary
+
+
+def test_api_tomoru_deals_finds_legacy_numeric_stage_alias(client, db_session):
+    portal = _portal()
+    _seed_kp_stage_dictionary(
+        db_session,
+        portal,
+        [("C15:4", "Тёплый"), ("4", "Тёплый")],
+    )
+    deal_id = 12001
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Legacy warm deal",
+            category_id=15,
+            stage_id="4",
+            payload_hash="h12001",
+            raw_payload={"id": deal_id, "title": "Legacy warm deal", "closed": "N"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=15&stage_id=C15:4")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert deal_id in ids
+
+
+def test_api_tomoru_deals_finds_legacy_null_category_numeric_stage(client, db_session):
+    portal = _portal()
+    _seed_kp_stage_dictionary(
+        db_session,
+        portal,
+        [("7", "КП дошло - связаться в 2020")],
+    )
+    deal_id = 12002
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Legacy KP deal",
+            category_id=None,
+            stage_id="7",
+            payload_hash="h12002",
+            raw_payload={"id": deal_id, "stageId": "7", "closed": "N"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=15&stage_id=7")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert deal_id in ids
+
+
+def test_api_tomoru_deals_finds_legacy_null_category_prefixed_stage(client, db_session):
+    portal = _portal()
+    _seed_kp_stage_dictionary(
+        db_session,
+        portal,
+        [("C15:UC_TEST", "Увели конкуренты")],
+    )
+    deal_id = 12003
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Competitors took deal",
+            category_id=None,
+            stage_id="C15:UC_TEST",
+            payload_hash="h12003",
+            raw_payload={"id": deal_id, "stageId": "C15:UC_TEST", "closed": "N"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=15&stage_id=C15:UC_TEST")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert deal_id in ids
+
+
+def test_api_tomoru_deals_shows_closed_stage_when_explicitly_filtered(client, db_session):
+    portal = _portal()
+    _seed_kp_stage_dictionary(
+        db_session,
+        portal,
+        [("C15:1", "Ушли конкуренты")],
+    )
+    deal_id = 12010
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Lost to competitors",
+            category_id=15,
+            stage_id="C15:1",
+            payload_hash="h12010",
+            raw_payload={"id": deal_id, "title": "Lost to competitors", "closed": "Y"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=15&stage_id=C15:1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    assert deal_id in {d["deal_id"] for d in data["deals"]}
+
+
+def test_api_tomoru_deals_hides_closed_without_stage_filter(client, db_session, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.export_deals_service.resolve_archive_stage_ids",
+        lambda *args, **kwargs: frozenset({"C15:UC_8W3UAD"}),
+    )
+    portal = _portal()
+    open_id = 12011
+    closed_id = 12012
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=open_id,
+            title="Open warm deal",
+            category_id=15,
+            stage_id="C15:4",
+            payload_hash="h12011",
+            raw_payload={"id": open_id, "title": "Open warm deal", "closed": "N"},
+        )
+    )
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=closed_id,
+            title="Closed lost deal",
+            category_id=15,
+            stage_id="C15:1",
+            payload_hash="h12012",
+            raw_payload={"id": closed_id, "title": "Closed lost deal", "closed": "Y"},
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=15")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert open_id in ids
+    assert closed_id not in ids
