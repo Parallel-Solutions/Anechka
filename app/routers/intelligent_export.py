@@ -1,6 +1,6 @@
-"""Intelligent export API — open contour without login.
+"""Intelligent export API.
 
-Router prefix: /api/intelligent-export. Legacy routers are untouched.
+Router prefix: /api/intelligent-export.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_export_dir
 from app.dependencies import (
-    get_ie_user,
+    get_current_user,
     get_session,
     get_settings_dep,
 )
@@ -158,7 +158,7 @@ def instantiate_template(
     template_key: str,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     """Materialize a quick-export template into a saved, validated plan version.
 
@@ -221,7 +221,7 @@ def create_conversation_from_prompt(
     prompt_id: str,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
     planner: BasePlanner = Depends(get_planner),
 ):
     """Create a dialog from a Tomoru starter and send the first chat message."""
@@ -258,7 +258,7 @@ def create_conversation(
     payload: ConversationCreate,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     conv = repo.create_conversation(payload.title)
@@ -270,7 +270,7 @@ def list_conversations(
     include_archived: bool = False,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     convs = repo.list_conversations(include_archived=include_archived)
@@ -293,7 +293,7 @@ def get_conversation(
     conversation_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -314,7 +314,7 @@ def patch_conversation(
     payload: ConversationPatch,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -329,7 +329,7 @@ def delete_conversation(
     conversation_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -344,7 +344,7 @@ def list_messages(
     conversation_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -366,7 +366,7 @@ def chat(
     payload: ChatRequest,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
     planner: BasePlanner = Depends(get_planner),
 ):
     repo = _repo(db, settings, user)
@@ -407,7 +407,7 @@ def save_plan(
     payload: PlanSaveRequest,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     portal_id = resolve_portal_id(settings)
@@ -441,7 +441,7 @@ def list_plans(
     conversation_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -456,7 +456,7 @@ def get_plan(
     plan_version_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -475,7 +475,7 @@ def activate_plan(
     plan_version_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -490,7 +490,7 @@ def clone_plan(
     plan_version_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -567,7 +567,7 @@ def count_plan(
     plan_version_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     _, prepared, scope, portal_id = _load_validated(repo, db, settings, user, plan_version_id)
@@ -581,7 +581,7 @@ def preview_plan(
     plan_version_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     version, prepared, scope, portal_id = _load_validated(repo, db, settings, user, plan_version_id)
@@ -615,7 +615,7 @@ def run_export(
     plan_version_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     version, prepared, scope, portal_id = _load_validated(repo, db, settings, user, plan_version_id)
@@ -668,7 +668,7 @@ def _run_payload(run, job: ExportJob | None) -> dict:
 def list_runs(
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     runs = repo.list_runs()
@@ -681,7 +681,7 @@ def get_run(
     run_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -697,7 +697,7 @@ def cancel_run(
     run_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -714,7 +714,7 @@ def retry_run(
     run_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -729,7 +729,7 @@ def download_run(
     run_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -773,7 +773,7 @@ def list_memory(
     status: str | None = None,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     entries = repo.list_memory(scope=scope, kind=kind, status=status)
@@ -784,7 +784,7 @@ def list_memory(
 def generate_memory_endpoint(
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     """Profile the current portal data and create db-aware *proposed* memory.
 
@@ -818,7 +818,7 @@ def propose_memory(
     payload: MemoryProposal,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     if payload.scope not in MEMORY_SCOPES:
         raise ie_error("VALIDATION_ERROR", f"Unknown scope: {payload.scope}")
@@ -849,7 +849,7 @@ def approve_memory(
     memory_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -870,7 +870,7 @@ def reject_memory(
     memory_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -889,7 +889,7 @@ def patch_memory(
     payload: MemoryPatch,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -908,7 +908,7 @@ def delete_memory(
     memory_id: int,
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     repo = _repo(db, settings, user)
     try:
@@ -928,7 +928,7 @@ def delete_memory(
 def get_audit(
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_ie_user),
+    user: AppUser = Depends(get_current_user),
 ):
     entries = list_audit(db, resolve_portal_id(settings))
     return {

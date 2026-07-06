@@ -629,16 +629,42 @@ class CallResultOrchestrator:
         deal = self.matcher.get_deal(deal_id) if deal_id else None
         assigned = deal.assigned_by_id if deal else None
 
+        contact_creation_allowed = self.marker_validator.contact_creation_allowed()
+        resolved_alternate_contact_id: int | None = None
+
+        if merged.signals.alternate_contact_requested:
+            ac = merged.signals.alternate_contact
+            phone = ac.phone
+            digits = "".join(c for c in str(phone or "") if c.isdigit())
+            if not phone or len(digits) < 10:
+                row.needs_manual_review = True
+                row.manual_review_reason = "Нет полного валидного телефона нового контакта"
+                row.execution_status = "blocked_manual_review"
+                return
+            resolved_alternate_contact_id = self.matcher.find_contact_id_by_phone(str(phone))
+            if not resolved_alternate_contact_id:
+                row.needs_manual_review = True
+                row.manual_review_reason = "Контакт по указанному телефону не найден в CRM"
+                row.execution_status = "blocked_manual_review"
+                return
+            ext = dict(row.extracted_data or {})
+            ext["alternate_contact_id"] = resolved_alternate_contact_id
+            row.extracted_data = ext
+
         planned = self.action_planner.plan(
             row,
             bitrix_deal_id=deal_id,
             assigned_by_id=assigned,
             signals=merged.signals,
             requires_manual=merged.requires_manual,
-            contact_creation_allowed=self.marker_validator.contact_creation_allowed(),
+            contact_creation_allowed=contact_creation_allowed,
+            resolved_alternate_contact_id=resolved_alternate_contact_id,
         )
 
         self._append_outcome_comment_if_needed(row, planned)
+
+        if self.repo.has_succeeded_task_for_call(row.call_id):
+            planned = [a for a in planned if a.method != "tasks.task.add"]
 
         if not planned and not merged.signals.active_signal_count():
             row.skip_reason = row.skip_reason or "Нет утверждённых действий"
@@ -661,7 +687,7 @@ class CallResultOrchestrator:
         source_id = row.source_identity or row.row_hash or str(row.id)
         for pa in planned:
             payload = pa.payload
-            if pa.method in ("crm.timeline.comment.add", "crm.activity.todo.add"):
+            if pa.method in ("crm.timeline.comment.add", "crm.activity.todo.add", "tasks.task.add"):
                 payload = self.payload_builder.build(
                     pa,
                     row,
@@ -671,6 +697,7 @@ class CallResultOrchestrator:
                     campaign_label=imp.original_filename,
                     deadline=row.callback_at,
                     settings=self.settings,
+                    context_actions=planned,
                 )
             pv = self.payload_validator.validate(pa.method, payload)
             idem = build_action_idempotency_key(

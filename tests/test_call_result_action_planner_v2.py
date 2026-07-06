@@ -29,29 +29,41 @@ def _row(**kw):
     return CallResultImportRow(**defaults)
 
 
-def _plan(signals: CallResultSignals, *, requires_manual: bool = False, **row_kw):
+def _plan(signals: CallResultSignals, *, requires_manual: bool = False, resolved_alternate_contact_id: int | None = None, **row_kw):
     return BitrixActionPlanner().plan(
         _row(**row_kw),
         bitrix_deal_id=1001,
         assigned_by_id=42,
         signals=signals,
         requires_manual=requires_manual,
+        resolved_alternate_contact_id=resolved_alternate_contact_id,
     )
 
 
-def test_positive_only_todo():
+def test_positive_only_task():
     actions = _plan(CallResultSignals(positive=True, summary="Нужно КП", confidence=0.9))
     methods = [a.method for a in actions]
-    assert methods == ["crm.activity.todo.add"]
+    assert methods == ["tasks.task.add"]
     assert "crm.timeline.comment.add" not in methods
-    assert "tasks.task.add" not in methods
+    assert "crm.activity.todo.add" not in methods
+
+
+def test_positive_task_without_deal_assigned():
+    actions = BitrixActionPlanner().plan(
+        _row(),
+        bitrix_deal_id=1001,
+        assigned_by_id=None,
+        signals=CallResultSignals(positive=True, summary="Нужно КП", confidence=0.9),
+        requires_manual=False,
+    )
+    assert [a.method for a in actions] == ["tasks.task.add"]
 
 
 def test_refusal_only_comment():
     actions = _plan(CallResultSignals(explicit_refusal=True, summary="Не нужно", confidence=0.9))
     methods = [a.method for a in actions]
     assert methods == ["crm.timeline.comment.add"]
-    assert "crm.activity.todo.add" not in methods
+    assert "tasks.task.add" not in methods
     assert "retry_queue.add" not in methods
 
 
@@ -62,7 +74,7 @@ def test_callback_later_only_retry():
     )
     methods = [a.method for a in actions]
     assert methods == ["retry_queue.add"]
-    assert "crm.activity.todo.add" not in methods
+    assert "tasks.task.add" not in methods
     assert "crm.timeline.comment.add" not in methods
 
 
@@ -75,32 +87,59 @@ def test_no_answer_only_retry():
     assert retry.human_summary == "Не дозвонились — очередь повторов"
 
 
-def test_alternate_contact_full_flow():
+def test_alternate_contact_resolved_flow():
     actions = _plan(
         CallResultSignals(
             alternate_contact_requested=True,
             alternate_contact={"name": "Иван", "phone": "+79001234567", "extension": None, "email": None, "position": None},
             confidence=0.9,
-        )
+        ),
+        resolved_alternate_contact_id=9001,
+    )
+    ops = [a.operation_type for a in actions]
+    assert ops == [
+        "bitrix_link_contact_to_deal",
+        "retry_queue_add",
+    ]
+    assert actions[0].payload.get("contact_id") == 9001
+
+
+def test_alternate_contact_without_resolved_id_plans_nothing():
+    actions = _plan(
+        CallResultSignals(
+            alternate_contact_requested=True,
+            alternate_contact={"name": "Иван", "phone": "+79001234567", "extension": None, "email": None, "position": None},
+            confidence=0.9,
+        ),
+    )
+    assert actions == []
+
+
+def test_hangup_without_result_comment_only():
+    actions = _plan(CallResultSignals(hangup_without_result=True, confidence=0.8))
+    assert len(actions) == 1
+    assert actions[0].method == "crm.timeline.comment.add"
+    assert "retry_queue.add" not in [a.method for a in actions]
+    assert "contact_search.add" not in [a.method for a in actions]
+
+
+def test_hangup_during_robocall_no_actions():
+    actions = _plan(CallResultSignals(hangup_during_robocall=True, confidence=0.95))
+    assert actions == []
+
+
+def test_replacement_contact_without_hangup_creates_contact():
+    actions = _plan(
+        CallResultSignals(replacement_contact_required=True, confidence=0.8),
+        raw_phone="+79161234567",
+        normalized_phone="9161234567",
     )
     ops = [a.operation_type for a in actions]
     assert ops == [
         "bitrix_find_contact",
         "bitrix_create_contact",
         "bitrix_link_contact_to_deal",
-        "retry_queue_add",
     ]
-
-
-def test_hangup_contact_search_and_retry():
-    actions = _plan(CallResultSignals(hangup_without_result=True, confidence=0.8))
-    assert len(actions) == 2
-    ops = [a.operation_type for a in actions]
-    assert ops == ["contact_search_queue_add", "retry_queue_add"]
-    assert actions[0].method == "contact_search.add"
-    assert actions[1].payload.get("reason") == "hangup_replacement_contact"
-    assert actions[1].payload.get("search_required") is True
-    assert actions[0].method != "crm.timeline.comment.add"
 
 
 def test_manual_review_no_bitrix():

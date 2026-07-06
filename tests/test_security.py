@@ -128,7 +128,7 @@ def test_plan_with_invented_field_is_rejected(db_session):
 # --- anonymous access -------------------------------------------------------
 
 
-def test_anonymous_requests_allowed(client):
+def test_api_accessible_when_auth_disabled(client):
     assert client.get(f"{API}/conversations").status_code == 200
     assert client.post(f"{API}/conversations", json={}).status_code == 200
 

@@ -53,14 +53,16 @@ class CallResultJobService:
         *,
         row_ids: list[int] | None = None,
         retry_failed_only: bool = False,
+        responsible_user_id: int | None = None,
     ) -> None:
-        cls.get_executor().submit(cls._run_execute, import_id, row_ids, retry_failed_only)
+        cls.get_executor().submit(cls._run_execute, import_id, row_ids, retry_failed_only, responsible_user_id)
 
     @staticmethod
     def _run_execute(
         import_id: int,
         row_ids: list[int] | None,
         retry_failed_only: bool,
+        responsible_user_id: int | None,
     ) -> None:
         db = SessionLocal()
         try:
@@ -68,7 +70,12 @@ class CallResultJobService:
             portal_id = resolve_portal_id(settings)
             from app.services.call_results.crm_action_service import CrmActionService
             svc = CrmActionService(db, settings, portal_id)
-            svc.execute_import(import_id, row_ids=row_ids, retry_failed_only=retry_failed_only)
+            svc.execute_import(
+                import_id,
+                row_ids=row_ids,
+                retry_failed_only=retry_failed_only,
+                responsible_user_id=responsible_user_id,
+            )
         except Exception:
             logger.exception("Execute job failed for import %s", import_id)
         finally:

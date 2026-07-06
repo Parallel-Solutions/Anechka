@@ -28,21 +28,25 @@
 
 ```bash
 cd bitrix_export_web
-bash scripts/deploy_linux.sh   # Linux
-# или: docker compose up --build -d
+bash scripts/deploy_linux.sh   # Linux, порт 80
+# или: docker compose -f docker-compose.yml up --build -d
 ```
 
-Локально (Windows):
+### Локальная разработка (Windows, порт 8000)
 
-```bash
+```powershell
 cd bitrix_export_web
-copy .env.example .env
+.\scripts\setup-local-env.ps1   # один раз: COMPOSE_FILE + WEB_PUBLISH_PORT=8000 в .env
 docker compose up --build -d
 ```
 
 Задайте в `.env` надёжные значения: `APP_SECRET_KEY`, `POSTGRES_PASSWORD`, `BASIC_AUTH_PASSWORD`.
 
 Откройте в браузере: **http://localhost:8000** — браузер запросит логин и пароль из `BASIC_AUTH_USERNAME` / `BASIC_AUTH_PASSWORD`.
+
+Dev-режим включает hot-reload (`uvicorn --reload`) и mount исходников — изменения кода подхватываются без полного rebuild. PostgreSQL доступен на **`localhost:5433`**.
+
+**Диагностика:** `docker compose ps` — в колонке PORTS должно быть `0.0.0.0:8000->8000`. Если `0.0.0.0:80->8000`, выполните `setup-local-env.ps1` и перезапустите стек.
 
 Сервисы: `db` → `db-restore` (восстановление `database.sql` на пустой БД) → `migrate` → `web`, `worker`.
 
@@ -70,6 +74,10 @@ docker compose exec web python scripts/fix_mojibake.py
 Остановка: `docker compose down` (данные в volumes сохраняются). Полный сброс: `docker compose down -v`.
 
 ### Режим разработки (hot-reload)
+
+Dev-режим включается автоматически через `COMPOSE_FILE` в `.env` (см. `setup-local-env.ps1`).
+
+Альтернатива без изменения `.env`:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
@@ -133,8 +141,10 @@ OPENAI_BITRIX_METADATA_MODEL=
 
 | Операция | Команда |
 |----------|---------|
-| Запуск (prod) | `docker compose up --build -d` |
-| Запуск (dev, hot-reload) | `docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build` |
+| Первичная настройка dev (Windows) | `.\scripts\setup-local-env.ps1` |
+| Запуск (dev, hot-reload, порт 8000) | `docker compose up --build -d` *(при `COMPOSE_FILE` в `.env`)* |
+| Запуск (prod, порт 80) | `docker compose -f docker-compose.yml up --build -d` |
+| Запуск (dev, явный override) | `docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build` |
 | Остановка | `docker compose down` |
 | Миграции (вручную) | `docker compose run --rm migrate` |
 | Тесты | `docker compose exec web pytest` |

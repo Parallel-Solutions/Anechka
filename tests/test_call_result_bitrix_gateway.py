@@ -1,6 +1,14 @@
 """Fake Bitrix gateway tests."""
 
+from app.services.call_results.bitrix_gateway import _external_id_from_result
 from app.services.call_results.fake_bitrix_gateway import FakeBitrixGateway
+
+
+def test_external_id_from_result_dict():
+    assert _external_id_from_result({"id": 151933}) == "151933"
+    assert _external_id_from_result({"ID": 42}) == "42"
+    assert _external_id_from_result(743292) == "743292"
+    assert _external_id_from_result(None) == ""
 
 
 def test_todo_and_comment():

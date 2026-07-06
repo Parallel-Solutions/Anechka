@@ -64,11 +64,8 @@ class Settings(BaseSettings):
         default=60, alias="BITRIX_IMPORT_SCHEDULE_INTERVAL_MINUTES"
     )
 
-    # --- HTTP Basic Auth (empty password = disabled) ---
-    basic_auth_username: str = Field(default="admin", alias="BASIC_AUTH_USERNAME")
-    basic_auth_password: str = Field(default="", alias="BASIC_AUTH_PASSWORD")
-
     # --- Auth / sessions ---
+    app_auth_disabled: bool = Field(default=False, alias="APP_AUTH_DISABLED")
     bootstrap_admin_email: str = Field(default="", alias="BOOTSTRAP_ADMIN_EMAIL")
     bootstrap_admin_password: str = Field(default="", alias="BOOTSTRAP_ADMIN_PASSWORD")
     session_cookie_name: str = Field(default="ie_session", alias="SESSION_COOKIE_NAME")

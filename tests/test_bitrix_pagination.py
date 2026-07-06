@@ -76,3 +76,15 @@ def test_http_400_not_found_no_retry():
                 client.call("crm.item.get")
     assert post_mock.call_count == 1
     sleep_mock.assert_not_called()
+
+
+def test_ssl_error_not_retried():
+    client = BitrixClient(_settings())
+    ssl_error = requests.exceptions.SSLError("certificate verify failed")
+
+    with patch.object(client.session, "post", side_effect=ssl_error) as post_mock:
+        with patch("app.services.bitrix_client.time.sleep") as sleep_mock:
+            with pytest.raises(BitrixAPIError, match="certificate verify failed"):
+                client.call("crm.contact.fields")
+    assert post_mock.call_count == 1
+    sleep_mock.assert_not_called()

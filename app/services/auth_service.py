@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 SESSION_SALT = "ie-session-v1"
 DEFAULT_IE_USER_EMAIL = "system@local"
+HIDDEN_USER_EMAILS = frozenset({DEFAULT_IE_USER_EMAIL})
 
 
 def hash_password(password: str) -> str:
@@ -90,7 +91,12 @@ class AuthService:
         return None
 
     def list_users(self) -> list[AppUser]:
-        return list(self.db.scalars(select(AppUser).where(AppUser.portal_id == self.portal_id).order_by(AppUser.id)))
+        users = list(
+            self.db.scalars(
+                select(AppUser).where(AppUser.portal_id == self.portal_id).order_by(AppUser.id)
+            )
+        )
+        return [user for user in users if user.email not in HIDDEN_USER_EMAILS]
 
     def create_user(
         self,
@@ -101,7 +107,7 @@ class AuthService:
         crm_user_external_id: int | None = None,
     ) -> AppUser:
         if role not in APP_ROLES:
-            raise ValueError(f"Unknown role: {role}")
+            role = "viewer"
         email = email.strip().lower()
         existing = self.db.scalar(
             select(AppUser).where(AppUser.portal_id == self.portal_id, AppUser.email == email)
@@ -124,6 +130,27 @@ class AuthService:
 
     def set_active(self, user: AppUser, active: bool) -> AppUser:
         user.is_active = active
+        user.updated_at = utcnow()
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
+    def update_user(
+        self,
+        user: AppUser,
+        *,
+        display_name: str | None = None,
+        password: str | None = None,
+        is_active: bool | None = None,
+    ) -> AppUser:
+        if display_name is not None:
+            user.display_name = display_name.strip() or user.email
+        if password is not None:
+            if len(password) < 6:
+                raise ValueError("Пароль должен быть не короче 6 символов")
+            user.password_hash = hash_password(password)
+        if is_active is not None:
+            user.is_active = is_active
         user.updated_at = utcnow()
         self.db.commit()
         self.db.refresh(user)

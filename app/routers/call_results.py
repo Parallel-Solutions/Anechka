@@ -7,14 +7,15 @@ from pathlib import Path
 
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings, get_call_result_storage_dir, get_call_results_model
-from app.dependencies import get_app_settings, get_call_result_classifier_instance, get_session
+from app.dependencies import get_app_settings, get_call_result_classifier_instance, get_current_user, get_session
 from app.models import (
+    AppUser,
     BitrixPreparedAction,
     CallResultImportRow,
     CallResultRowAudit,
@@ -28,7 +29,9 @@ from app.schemas_call_results import (
     ActionOut,
     ActionPatchRequest,
     AttemptHistoryOut,
+    ExecuteLogItemOut,
     ExecuteRequest,
+    ExecuteStatusOut,
     HangupRowOut,
     ImportConfigureRequest,
     ImportDetailOut,
@@ -58,13 +61,19 @@ from app.services.call_results.manual_review_service import (
     ManualReviewError,
     ManualResolveConfirm,
     ManualReviewService,
+    get_available_manual_actions,
+    is_pending_manual_review_row,
+)
+from app.services.call_results.contact_marker_validator import (
+    get_contact_creation_allowed,
+    get_marker_validation,
 )
 from app.services.call_results.orchestrator import CallResultOrchestrator
 from app.services.call_results.payload_builder import BitrixPayloadBuilder
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.row_disposition import get_row_disposition, is_manual_review_row
-from app.services.call_results.row_filter import get_dial_phone, get_row_filter
-from app.utils.portal import bitrix_deal_url
+from app.services.call_results.row_filter import get_dial_phone, get_primary_bucket, get_row_filter
+from app.utils.portal import bitrix_action_external_url, bitrix_deal_url
 
 router = APIRouter(tags=["call-results"])
 
@@ -180,9 +189,19 @@ def _row_list_out(
     row: CallResultImportRow,
     portal_id: str,
     row_actions: list[BitrixPreparedAction] | None = None,
+    *,
+    contact_creation_allowed: bool = True,
 ) -> RowListOut:
     nd = row.normalized_data or {}
     actions = row_actions if row_actions is not None else list(row.actions or [])
+    available_actions = get_available_manual_actions(
+        row,
+        contact_creation_allowed=contact_creation_allowed,
+    )
+    manual_review_pending = is_pending_manual_review_row(
+        row,
+        contact_creation_allowed=contact_creation_allowed,
+    )
     return RowListOut(
         id=row.id,
         source_row_number=row.source_row_number,
@@ -224,15 +243,27 @@ def _row_list_out(
         execution_status=row.execution_status,
         ui_disposition=get_row_disposition(row, actions),
         row_filter=get_row_filter(row, actions),
+        primary_bucket=get_primary_bucket(row, actions),
         dial_phone=get_dial_phone(row),
         operator_filter=row.operator_filter,
+        available_manual_actions=list(available_actions),
+        manual_review_pending=manual_review_pending,
     )
 
 
-def _row_out(row: CallResultImportRow, portal_id: str) -> RowOut:
+def _row_out(
+    row: CallResultImportRow,
+    portal_id: str,
+    *,
+    contact_creation_allowed: bool = True,
+) -> RowOut:
     nd = row.normalized_data or {}
     return RowOut(
-        **_row_list_out(row, portal_id).model_dump(),
+        **_row_list_out(
+            row,
+            portal_id,
+            contact_creation_allowed=contact_creation_allowed,
+        ).model_dump(),
         llm_result=row.llm_result,
         raw_data=row.raw_data,
         normalized_data=nd,
@@ -247,8 +278,7 @@ def _is_hangup_without_answers(row: CallResultImportRow) -> bool:
 
 def _is_hangup_with_answers(row: CallResultImportRow) -> bool:
     sig = row.business_signals or {}
-    nd = row.normalized_data or {}
-    return bool(sig.get("hangup_without_result")) and bool(nd.get("has_meaningful_content"))
+    return bool(sig.get("hangup_during_robocall"))
 
 
 def _row_needs_manual_review(
@@ -279,6 +309,7 @@ def _collect_retry_call_phones(rows: list[CallResultImportRow]) -> list[str]:
 
 def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
     settings = get_app_settings(db)
+    contact_creation_allowed = get_contact_creation_allowed(settings)
     repo = CallResultRepository(db, portal_id)
     rows = repo.list_rows(imp.id)
     actions = repo.list_actions(imp.id)
@@ -298,6 +329,11 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         if not label or not label.assigned_by_id:
             return None
         return user_map.get(label.assigned_by_id)
+
+    service_user_id = int(settings.bitrix_service_user_id or 0)
+
+    def task_responsible_user_id(_deal_id: int | None) -> int | None:
+        return service_user_id if service_user_id > 0 else None
 
     by_method: dict[str, list[ActionOut]] = {}
     row_by_id = {r.id: r for r in rows}
@@ -326,6 +362,11 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
             deal_title=deal_title(matched_deal_id),
             bitrix_deal_id=matched_deal_id,
             responsible_name=responsible_name(matched_deal_id),
+            task_responsible_user_id=(
+                task_responsible_user_id(matched_deal_id)
+                if a.method in ("tasks.task.add", "crm.activity.todo.add")
+                else None
+            ),
             final_category=row.final_category if row else None,
             execution_status=a.execution_status,
             last_error=a.last_error,
@@ -349,7 +390,10 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
 
     manual_review_ids = [
         r.id for r in rows
-        if get_row_filter(r, actions_by_row_id.get(r.id, [])) == "manual_review"
+        if is_pending_manual_review_row(
+            r,
+            contact_creation_allowed=contact_creation_allowed,
+        )
     ]
     retry_call_phones = _collect_retry_call_phones(rows)
     agg = CallAttemptAggregator()
@@ -381,6 +425,22 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
                 execution_status=r.execution_status,
             )
         )
+
+    primary_counts = {"manual_review": 0, "auto_call": 0, "new_comments": 0}
+    filter_counts = {
+        f: 0
+        for f in ("manual_review", "manual_call", "auto_call", "new_contacts", "new_todos", "new_comments")
+    }
+    manual_call_inclusive = 0
+    for r in rows:
+        row_actions = actions_by_row_id.get(r.id, [])
+        bucket = get_primary_bucket(r, row_actions)
+        primary_counts[bucket] += 1
+        rf = get_row_filter(r, row_actions)
+        filter_counts[rf] += 1
+        ud = get_row_disposition(r, row_actions)
+        if rf == "manual_call" or ud == "manual_call":
+            manual_call_inclusive += 1
 
     summary = ImportSummaryOut(
         total_rows=imp.total_rows or len(rows),
@@ -421,12 +481,20 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         pure_no_answer=sum(1 for r in rows if r.primary_outcome == "no_answer"),
         retry_call_phones=len(retry_call_phones),
         hangup=sum(1 for r in rows if (r.business_signals or {}).get("hangup_without_result")),
+        hangup_during_robocall=sum(
+            1 for r in rows if (r.business_signals or {}).get("hangup_during_robocall")
+        ),
         hangup_with_answers=sum(1 for r in rows if _is_hangup_with_answers(r)),
         hangup_without_answers=len(hangup_rows),
         prepared_operations=sum(1 for a in actions if a.execution_status == "prepared"),
         executed_operations=sum(1 for a in actions if a.execution_status == "succeeded"),
         execution_errors=sum(1 for a in actions if a.execution_status == "failed"),
         execute_status=imp.execute_status,
+        primary_manual_review=primary_counts["manual_review"],
+        primary_auto_call=primary_counts["auto_call"],
+        primary_new_comments=primary_counts["new_comments"],
+        filter_counts=filter_counts,
+        manual_call_inclusive=manual_call_inclusive,
     )
 
     return ImportDetailOut(
@@ -442,7 +510,15 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         error_message=imp.error_message,
         duplicate_of_import_id=imp.duplicate_of_import_id,
         summary=summary,
-        rows=[_row_list_out(r, portal_id, actions_by_row_id.get(r.id, [])) for r in rows],
+        rows=[
+            _row_list_out(
+                r,
+                portal_id,
+                actions_by_row_id.get(r.id, []),
+                contact_creation_allowed=contact_creation_allowed,
+            )
+            for r in rows
+        ],
         actions_by_method=by_method,
         manual_review_ids=manual_review_ids,
         attempt_history=attempt_history,
@@ -692,7 +768,7 @@ def patch_row(
         for key in (
             "positive", "alternate_contact_requested", "callback_later_requested",
             "no_answer", "deal_not_found", "explicit_refusal", "hangup_without_result",
-            "replacement_contact_required", "needs_manual_review",
+            "hangup_during_robocall", "replacement_contact_required", "needs_manual_review",
         ):
             val = getattr(body, key, None)
             if val is not None:
@@ -880,6 +956,20 @@ def rebuild_import(import_id: int, db: Session = Depends(get_session)):
     return MessageResponse(message="План пересобран", import_id=import_id)
 
 
+@router.post("/api/call-results/imports/{import_id}/replan-positive-tasks")
+def replan_positive_tasks(import_id: int, db: Session = Depends(get_session)):
+    from app.services.call_results.replan_service import replan_positive_to_tasks
+
+    settings = get_app_settings(db)
+    portal_id, repo = _portal_repo(db)
+    if repo.get_import(import_id) is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    classifier = get_call_result_classifier_instance(settings)
+    orch = CallResultOrchestrator(db, settings, portal_id, classifier)
+    report = replan_positive_to_tasks(orch, import_id)
+    return JSONResponse(content=report.as_dict())
+
+
 @router.post("/api/call-results/imports/{import_id}/rematch")
 def rematch_import(import_id: int, db: Session = Depends(get_session)):
     settings = get_app_settings(db)
@@ -1009,36 +1099,107 @@ def delete_import(import_id: int, db: Session = Depends(get_session)):
 
 
 @router.post("/api/call-results/imports/{import_id}/execute")
-def execute_import(import_id: int, body: ExecuteRequest, db: Session = Depends(get_session)):
+def execute_import(
+    import_id: int,
+    body: ExecuteRequest,
+    db: Session = Depends(get_session),
+    user: AppUser = Depends(get_current_user),
+):
     settings = get_app_settings(db)
     if not settings.call_results_bitrix_execution_enabled:
         raise HTTPException(status_code=403, detail="Выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false)")
     if body.confirmation_token != "EXECUTE":
         raise HTTPException(status_code=400, detail="Требуется confirmation_token=EXECUTE")
+    portal_id, repo = _portal_repo(db)
     CallResultJobService().submit_execute(
         import_id,
         row_ids=body.row_ids,
         retry_failed_only=body.retry_failed_only,
+        responsible_user_id=user.crm_user_external_id,
     )
     return MessageResponse(message="Выполнение запущено в фоне", import_id=import_id)
 
 
-@router.get("/api/call-results/imports/{import_id}/execute/status")
-def execute_status(import_id: int, db: Session = Depends(get_session)):
-    _, repo = _portal_repo(db)
+@router.get("/api/call-results/imports/{import_id}/execute/status", response_model=ExecuteStatusOut)
+def execute_status(
+    import_id: int,
+    row_ids: str | None = Query(None, description="Comma-separated import row IDs for per-action log"),
+    db: Session = Depends(get_session),
+):
+    portal_id, repo = _portal_repo(db)
     imp = repo.get_import(import_id)
     if imp is None:
         raise HTTPException(status_code=404, detail="Import not found")
     actions = repo.list_actions(import_id)
-    return {
-        "execute_status": imp.execute_status,
-        "started_at": imp.execute_started_at,
-        "completed_at": imp.execute_completed_at,
-        "succeeded": sum(1 for a in actions if a.execution_status == "succeeded"),
-        "failed": sum(1 for a in actions if a.execution_status == "failed"),
-        "skipped": sum(1 for a in actions if a.execution_status == "skipped"),
-        "prepared": sum(1 for a in actions if a.execution_status == "prepared"),
-    }
+    row_id_set: set[int] | None = None
+    if row_ids:
+        try:
+            row_id_set = {int(x.strip()) for x in row_ids.split(",") if x.strip()}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid row_ids") from exc
+
+    items: list[ExecuteLogItemOut] | None = None
+    if row_id_set is not None:
+        settings = get_app_settings(db)
+        task_gateway = None
+        if settings.call_results_bitrix_execution_enabled and settings.bitrix_webhook_url:
+            from app.services.call_results.bitrix_gateway import (
+                build_bitrix_gateway,
+                maybe_refresh_task_action_url,
+            )
+
+            task_gateway = build_bitrix_gateway(settings)
+        row_map = {r.id: r for r in repo.list_rows(import_id) if r.id in row_id_set}
+        filtered = [
+            a for a in actions
+            if a.import_row_id in row_id_set and a.is_enabled
+        ]
+        filtered.sort(key=lambda a: (a.import_row_id, a.sort_order or 0, a.id))
+        refreshed = False
+        if task_gateway is not None:
+            for a in filtered:
+                if maybe_refresh_task_action_url(a, portal_id=portal_id, gateway=task_gateway):
+                    refreshed = True
+            if refreshed:
+                db.commit()
+        items = []
+        for a in filtered:
+            row = row_map.get(a.import_row_id)
+            deal_id = row.matched_deal_id if row else None
+            items.append(
+                ExecuteLogItemOut(
+                    id=a.id,
+                    import_row_id=a.import_row_id,
+                    source_row_number=row.source_row_number if row else None,
+                    method=a.method,
+                    human_summary=a.human_summary,
+                    execution_status=a.execution_status or "prepared",
+                    external_id=a.external_id,
+                    bitrix_external_url=bitrix_action_external_url(
+                        portal_id,
+                        a.method,
+                        a.external_id,
+                        deal_id=deal_id,
+                        request_payload=a.request_payload,
+                        response_payload=a.response_payload,
+                    ),
+                    last_error=a.last_error,
+                    response_payload=a.response_payload,
+                    started_at=a.started_at,
+                    completed_at=a.completed_at,
+                )
+            )
+
+    return ExecuteStatusOut(
+        execute_status=imp.execute_status,
+        started_at=imp.execute_started_at,
+        completed_at=imp.execute_completed_at,
+        succeeded=sum(1 for a in actions if a.execution_status == "succeeded"),
+        failed=sum(1 for a in actions if a.execution_status == "failed"),
+        skipped=sum(1 for a in actions if a.execution_status == "skipped"),
+        prepared=sum(1 for a in actions if a.execution_status == "prepared"),
+        items=items,
+    )
 
 
 @router.get("/api/call-results/retry-queue")
@@ -1121,11 +1282,11 @@ def confirm_contact_search(entry_id: int, contact_id: int, phone: str | None = N
 @router.get("/api/call-results/diagnostics")
 def call_results_diagnostics(db: Session = Depends(get_session)):
     settings = get_app_settings(db)
-    from app.services.call_results.contact_marker_validator import ContactMarkerValidator
-    marker = ContactMarkerValidator(settings).validate()
+    marker = get_marker_validation(settings)
     return {
         "bitrix_webhook_configured": bool(settings.bitrix_webhook_url),
         "execution_enabled": settings.call_results_bitrix_execution_enabled,
+        "bitrix_service_user_id": int(settings.bitrix_service_user_id or 0),
         "contact_marker_configured": marker.configured,
         "contact_marker_validated": marker.validated,
         "contact_marker_error": marker.error,

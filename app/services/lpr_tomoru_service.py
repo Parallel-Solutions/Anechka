@@ -448,7 +448,7 @@ class LprTomoruService:
                 "Сущность": "Сделки",
                 "Источник": "локальная БД",
                 "Воронка": category_id,
-                "Стадии": ", ".join(stage_ids),
+                "Стадии": ", ".join(stage_ids or []),
                 "Регионы": ", ".join(
                     region_names[idx] if idx < len(region_names) else str(rid)
                     for idx, rid in enumerate(region_ids)

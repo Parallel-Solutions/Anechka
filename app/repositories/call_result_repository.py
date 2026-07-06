@@ -110,6 +110,29 @@ class CallResultRepository:
             )
         )
 
+    def has_succeeded_task_for_call(self, call_id: str | None) -> bool:
+        if not call_id:
+            return False
+        found = self.db.scalar(
+            select(func.count())
+            .select_from(BitrixPreparedAction)
+            .join(
+                CallResultImportRow,
+                CallResultImportRow.id == BitrixPreparedAction.import_row_id,
+            )
+            .join(
+                CallResultImport,
+                CallResultImport.id == BitrixPreparedAction.import_id,
+            )
+            .where(
+                CallResultImport.portal_id == self.portal_id,
+                CallResultImportRow.call_id == call_id,
+                BitrixPreparedAction.method == "tasks.task.add",
+                BitrixPreparedAction.execution_status == "succeeded",
+            )
+        )
+        return bool(found)
+
     def list_actions(self, import_id: int) -> list[BitrixPreparedAction]:
         return list(
             self.db.scalars(

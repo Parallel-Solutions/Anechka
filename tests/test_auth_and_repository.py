@@ -6,7 +6,6 @@ import pytest
 
 from app.config import get_settings
 from app.repositories.intelligent_export_repository import (
-    IeAccessDenied,
     IeNotFound,
     IntelligentExportRepository,
     PlanVersionConflict,
@@ -52,29 +51,24 @@ def test_inactive_user_cannot_login_or_session(auth):
     assert auth.load_session(token) is None
 
 
-def test_conversation_ownership_isolation(db_session, auth):
+def test_conversation_shared_between_users(db_session, auth):
     alice = auth.create_user("alice@example.com", "pw12345", role="analyst")
     bob = auth.create_user("bob@example.com", "pw12345", role="analyst")
     repo_a = IntelligentExportRepository(db_session, _scope(alice))
     repo_b = IntelligentExportRepository(db_session, _scope(bob))
 
     conv = repo_a.create_conversation("Alice plan")
-    # Bob cannot read Alice's conversation
-    with pytest.raises(IeAccessDenied):
-        repo_b.get_conversation(conv.id)
-    # Alice can
-    assert repo_a.get_conversation(conv.id).id == conv.id
-    # Bob's listing does not include it
-    assert conv.id not in {c.id for c in repo_b.list_conversations()}
+    assert repo_b.get_conversation(conv.id).id == conv.id
+    assert conv.id in {c.id for c in repo_b.list_conversations()}
 
 
-def test_admin_can_access_any_conversation(db_session, auth):
+def test_any_user_can_access_conversation(db_session, auth):
     alice = auth.create_user("alice2@example.com", "pw12345", role="analyst")
-    admin = auth.create_user("admin@example.com", "pw12345", role="admin")
+    other = auth.create_user("other@example.com", "pw12345", role="viewer")
     repo_a = IntelligentExportRepository(db_session, _scope(alice))
-    repo_admin = IntelligentExportRepository(db_session, _scope(admin))
+    repo_other = IntelligentExportRepository(db_session, _scope(other))
     conv = repo_a.create_conversation("Alice plan")
-    assert repo_admin.get_conversation(conv.id).id == conv.id
+    assert repo_other.get_conversation(conv.id).id == conv.id
 
 
 def _minimal_plan(title="P"):
@@ -136,7 +130,7 @@ def test_activate_old_version(db_session, auth):
     assert conv.current_plan_version_id == v1.id
 
 
-def test_memory_visibility_user_vs_project(db_session, auth):
+def test_memory_visible_to_all_users(db_session, auth):
     alice = auth.create_user("ma@example.com", "pw12345", role="analyst")
     bob = auth.create_user("mb@example.com", "pw12345", role="analyst")
     repo_a = IntelligentExportRepository(db_session, _scope(alice))
@@ -146,8 +140,6 @@ def test_memory_visibility_user_vs_project(db_session, auth):
     user_mem = repo_a.create_memory(scope="user", kind="preference", key="fmt", content="...", value_json=None, status="approved")
 
     bob_visible = {m.id for m in repo_b.list_memory()}
-    assert project_mem.id in bob_visible  # project memory is shared
-    assert user_mem.id not in bob_visible  # alice's user memory is private
-
-    with pytest.raises(IeAccessDenied):
-        repo_b.get_memory(user_mem.id)
+    assert project_mem.id in bob_visible
+    assert user_mem.id in bob_visible
+    assert repo_b.get_memory(user_mem.id).id == user_mem.id

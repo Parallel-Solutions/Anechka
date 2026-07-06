@@ -46,15 +46,19 @@ def test_manual_review_blocks_manual_call():
     assert get_row_disposition(row, actions) == "manual_review"
 
 
-def test_hangup_goes_to_manual_call_not_auto():
+def test_hangup_without_result_comment_is_manual_review():
     row = _row(business_signals={"hangup_without_result": True})
-    actions = [
-        _action("contact_search.add"),
-        _action("retry_queue.add", reason="hangup_replacement_contact"),
-    ]
-    assert row_matches_manual_call(row, actions)
-    assert row_matches_auto_call(row, actions)
-    assert get_row_disposition(row, actions) == "manual_call"
+    actions = [_action("crm.timeline.comment.add")]
+    assert not row_matches_manual_call(row, actions)
+    assert not row_matches_auto_call(row, actions)
+    assert get_row_disposition(row, actions) == "manual_review"
+
+
+def test_hangup_during_robocall_is_manual_call():
+    row = _row(business_signals={"hangup_during_robocall": True})
+    assert row_matches_manual_call(row, [])
+    assert not row_matches_auto_call(row, [])
+    assert get_row_disposition(row, []) == "manual_call"
 
 
 def test_pure_no_answer_is_auto_call():
@@ -99,8 +103,7 @@ def test_dispositions_are_mutually_exclusive():
             _action("retry_queue.add", reason="callback_later"),
         ]),
         (_row(business_signals={"hangup_without_result": True}), [
-            _action("contact_search.add"),
-            _action("retry_queue.add", reason="hangup_replacement_contact"),
+            _action("crm.timeline.comment.add"),
         ]),
         (_row(primary_outcome="no_answer", business_signals={"no_answer": True}), []),
         (_row(match_status="not_found", matched_deal_id=None, primary_outcome="refusal",
@@ -146,7 +149,25 @@ def test_should_not_plan_outcome_comment_when_already_present():
     assert not should_plan_outcome_comment(row, actions)
 
 
-def test_should_plan_outcome_comment_for_manual_review_positive():
+def test_should_not_plan_outcome_comment_for_positive():
     row = _row(primary_outcome="positive", business_signals={"positive": True})
-    actions = [_action("crm.activity.todo.add")]
-    assert should_plan_outcome_comment(row, actions)
+    actions = [_action("tasks.task.add")]
+    assert not should_plan_outcome_comment(row, actions)
+
+
+def test_should_not_plan_outcome_comment_for_alternate_contact():
+    row = _row(
+        primary_outcome="alternate_contact",
+        business_signals={"alternate_contact_requested": True},
+    )
+    actions = [
+        _action("crm.deal.contact.add"),
+        _action("retry_queue.add", reason="alternate_contact"),
+    ]
+    assert not should_plan_outcome_comment(row, actions)
+
+
+def test_should_not_plan_outcome_comment_for_hangup_without_result():
+    row = _row(business_signals={"hangup_without_result": True})
+    actions = [_action("crm.timeline.comment.add")]
+    assert not should_plan_outcome_comment(row, actions)

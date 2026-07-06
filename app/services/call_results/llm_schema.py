@@ -19,6 +19,7 @@ PrimaryOutcome = Literal[
     "no_answer",
     "refusal",
     "hangup",
+    "hangup_during_robocall",
     "mixed",
     "manual_review",
     "unsupported_outcome",
@@ -54,6 +55,7 @@ class CallResultSignals(BaseModel):
     deal_not_found: bool = False
     explicit_refusal: bool = False
     hangup_without_result: bool = False
+    hangup_during_robocall: bool = False
     replacement_contact_required: bool = False
     alternate_contact: AlternateContactData = Field(default_factory=AlternateContactData)
     callback_at: datetime | None = None
@@ -76,6 +78,7 @@ class CallResultSignals(BaseModel):
                 self.no_answer,
                 self.explicit_refusal,
                 self.hangup_without_result,
+                self.hangup_during_robocall,
             )
             if flag
         )
@@ -94,6 +97,7 @@ class CallResultLLMResult(BaseModel):
     no_answer: bool = False
     explicit_refusal: bool = False
     hangup_without_result: bool = False
+    hangup_during_robocall: bool = False
     replacement_contact_required: bool = False
     alternate_contact: AlternateContactData = Field(default_factory=AlternateContactData)
     callback_at: datetime | None = None
@@ -130,6 +134,7 @@ class CallResultLLMResult(BaseModel):
             no_answer=self.no_answer,
             explicit_refusal=self.explicit_refusal,
             hangup_without_result=self.hangup_without_result,
+            hangup_during_robocall=self.hangup_during_robocall,
             replacement_contact_required=self.replacement_contact_required,
             alternate_contact=self.alternate_contact,
             callback_at=self.callback_at,
@@ -198,6 +203,8 @@ def compute_primary_outcome(signals: CallResultSignals) -> str:
         active.append("refusal")
     if signals.hangup_without_result:
         active.append("hangup")
+    if signals.hangup_during_robocall:
+        active.append("hangup_during_robocall")
     if len(active) > 1:
         return "mixed"
     if len(active) == 1:
@@ -215,6 +222,7 @@ def legacy_category_from_signals(signals: CallResultSignals) -> str:
         "no_answer": "manager_callback",
         "refusal": "refusal",
         "hangup": "robot_callback",
+        "hangup_during_robocall": "robot_callback",
         "mixed": "unknown",
         "manual_review": "unknown",
         "unsupported_outcome": "unknown",
@@ -231,6 +239,7 @@ CALL_RESULT_CLASSIFICATION_SCHEMA = {
         "no_answer": {"type": "boolean"},
         "explicit_refusal": {"type": "boolean"},
         "hangup_without_result": {"type": "boolean"},
+        "hangup_during_robocall": {"type": "boolean"},
         "replacement_contact_required": {"type": "boolean"},
         "alternate_contact": {
             "type": "object",
@@ -260,6 +269,7 @@ CALL_RESULT_CLASSIFICATION_SCHEMA = {
                 "no_answer": {"type": ["string", "null"]},
                 "explicit_refusal": {"type": ["string", "null"]},
                 "hangup_without_result": {"type": ["string", "null"]},
+                "hangup_during_robocall": {"type": ["string", "null"]},
                 "replacement_contact_required": {"type": ["string", "null"]},
             },
             "required": [
@@ -269,6 +279,7 @@ CALL_RESULT_CLASSIFICATION_SCHEMA = {
                 "no_answer",
                 "explicit_refusal",
                 "hangup_without_result",
+                "hangup_during_robocall",
                 "replacement_contact_required",
             ],
             "additionalProperties": False,
@@ -290,14 +301,15 @@ CALL_RESULT_CLASSIFICATION_SCHEMA = {
             "type": ["string", "null"],
             "enum": [
                 "positive", "alternate_contact", "callback_later", "refusal",
-                "hangup", "mixed", "manual_review", "unsupported_outcome", None,
+                "hangup", "hangup_during_robocall", "mixed", "manual_review",
+                "unsupported_outcome", None,
             ],
         },
     },
     "required": [
         "positive", "alternate_contact_requested", "callback_later_requested",
         "no_answer", "explicit_refusal", "hangup_without_result",
-        "replacement_contact_required", "alternate_contact",
+        "hangup_during_robocall", "replacement_contact_required", "alternate_contact",
         "callback_at", "callback_text", "summary", "refusal_reason",
         "confidence", "needs_manual_review", "manual_review_reason",
         "signal_reasons", "evidence", "primary_outcome",

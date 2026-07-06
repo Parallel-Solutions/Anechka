@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import ssl
 import time
 from typing import Any, Callable
 
 import requests
+from requests.exceptions import SSLError as RequestsSSLError
 
 from app.config import Settings
 from app.exceptions import (
@@ -30,6 +32,15 @@ ENTITY_FIELD_METHODS = {
     "contact": "crm.contact.fields",
     "company": "crm.company.fields",
 }
+
+
+def _is_non_retriable_request_error(exc: requests.RequestException) -> bool:
+    if isinstance(exc, RequestsSSLError):
+        return True
+    cause = exc.__cause__
+    if isinstance(cause, ssl.SSLCertVerificationError):
+        return True
+    return False
 
 
 class BitrixClient:
@@ -121,6 +132,8 @@ class BitrixClient:
                 raise
             except requests.RequestException as exc:
                 last_exc = exc
+                if _is_non_retriable_request_error(exc):
+                    raise BitrixAPIError(str(exc)) from exc
                 if attempt < self.settings.max_retries:
                     delay = self.settings.retry_base_delay * (2**attempt)
                     logger.warning("HTTP error on %s: %s, retry in %.1fs", method, exc, delay)

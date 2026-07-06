@@ -69,6 +69,7 @@ def test_llm_result_normalizes_empty_signal_reasons():
             "no_answer": False,
             "explicit_refusal": False,
             "hangup_without_result": False,
+            "hangup_during_robocall": False,
             "replacement_contact_required": False,
             "alternate_contact": {
                 "name": None,
@@ -91,6 +92,7 @@ def test_llm_result_normalizes_empty_signal_reasons():
                 "no_answer": None,
                 "explicit_refusal": None,
                 "hangup_without_result": None,
+                "hangup_during_robocall": None,
                 "replacement_contact_required": None,
             },
             "evidence": [],

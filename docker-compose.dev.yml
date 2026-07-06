@@ -7,6 +7,8 @@ services:
       - "5433:5432"
 
   web:
+    ports: !override
+      - "${WEB_PUBLISH_PORT:-8000}:8000"
     command:
       [
         "uvicorn",
@@ -19,6 +21,13 @@ services:
         "--timeout-graceful-shutdown",
         "30",
       ]
+    volumes:
+      - .:/app
+      - ./exports:/app/exports
+      - ./logs:/app/logs
+      - filestorage:/app/filestorage
+
+  worker:
     volumes:
       - .:/app
       - ./exports:/app/exports

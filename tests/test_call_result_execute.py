@@ -99,25 +99,112 @@ def test_execute_disabled_raises(db_session):
         svc.execute_import(imp.id)
 
 
-def test_execute_positive_todo(db_session):
+def test_execute_positive_task(db_session):
     from app.config import get_settings
 
     imp, row, settings, orch = _process_csv(db_session, HOT_ROW_CSV)
-    comment_actions = [
+    task_actions = [
         a for a in orch.repo.list_actions(imp.id)
-        if a.method == "crm.timeline.comment.add" and a.import_row_id == row.id
+        if a.method == "tasks.task.add" and a.import_row_id == row.id
     ]
-    assert len(comment_actions) == 1
+    assert len(task_actions) == 1
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway()
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_import(imp.id, responsible_user_id=999)
+    assert stats["succeeded"] >= 1
+    assert len(gw.tasks) == 1
+    assert len(gw.comments) == 0
+    task_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "tasks.task.add"]
+    assert task_actions[0].execution_status == "succeeded"
+    assert gw.tasks[0]["fields"]["RESPONSIBLE_ID"] == 999
+    assert task_actions[0].response_payload.get("bitrix_task_url")
+    assert task_actions[0].response_payload.get("bitrix_task_link_source") == "api_link"
+    assert "/user/999/tasks/task/view/1/" in task_actions[0].response_payload.get("bitrix_task_url")
+    assert task_actions[0].response_payload.get("status") == "created"
+
+
+def test_execute_todo_uses_operator_not_deal_assignee(db_session):
+    from app.config import get_settings
+    from app.models import BitrixPreparedAction
+
+    imp, row, settings, orch = _process_csv(db_session, HOT_ROW_CSV)
+    todo_actions = [
+        a for a in orch.repo.list_actions(imp.id)
+        if a.method == "crm.activity.todo.add" and a.import_row_id == row.id
+    ]
+    if not todo_actions:
+        db_session.add(
+            BitrixPreparedAction(
+                import_id=imp.id,
+                import_row_id=row.id,
+                action_group_id="test-group",
+                method="crm.activity.todo.add",
+                action_type="crm_todo",
+                operation_type="bitrix_add_todo",
+                payload={
+                    "ownerTypeId": 2,
+                    "ownerId": row.matched_deal_id,
+                    "title": "Test todo",
+                    "description": "Test",
+                    "pingOffsets": [0, 15],
+                    "responsibleId": 999,
+                },
+                human_summary="CRM-дело: тест",
+                validation_status="valid",
+                is_enabled=True,
+                idempotency_key="test-todo-override",
+            )
+        )
+        db_session.commit()
+    else:
+        todo_actions[0].payload = dict(todo_actions[0].payload or {})
+        todo_actions[0].payload["responsibleId"] = 999
+        db_session.commit()
+
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway()
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_import(imp.id, responsible_user_id=999)
+    assert stats["succeeded"] >= 1
+    assert len(gw.todos) == 1
+    assert gw.todos[0]["responsibleId"] == 999
+
+
+def test_execute_todo_responsible_fallback_service_user(db_session):
+    from app.config import get_settings
+    from app.models import BitrixPreparedAction
+
+    imp, row, settings, orch = _process_csv(db_session, HOT_ROW_CSV)
+    settings.bitrix_service_user_id = 77
+    db_session.add(
+        BitrixPreparedAction(
+            import_id=imp.id,
+            import_row_id=row.id,
+            action_group_id="test-todo-fallback",
+            method="crm.activity.todo.add",
+            action_type="crm_todo",
+            operation_type="bitrix_add_todo",
+            payload={
+                "ownerTypeId": 2,
+                "ownerId": row.matched_deal_id,
+                "title": "Test todo",
+                "description": "Test",
+                "pingOffsets": [0, 15],
+            },
+            human_summary="CRM-дело: тест",
+            validation_status="valid",
+            is_enabled=True,
+            idempotency_key="test-todo-fallback",
+        )
+    )
+    db_session.commit()
     settings.call_results_bitrix_execution_enabled = True
     gw = FakeBitrixGateway()
     svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
     stats = svc.execute_import(imp.id)
-    assert stats["succeeded"] >= 2
-    assert len(gw.todos) == 1
-    assert len(gw.comments) == 1
-    todo_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "crm.activity.todo.add"]
-    assert todo_actions[0].execution_status == "succeeded"
-    assert comment_actions[0].execution_status == "succeeded"
+    assert stats["succeeded"] >= 1
+    assert gw.todos[0]["responsibleId"] == 77
 
 
 def test_execute_idempotent_skip_succeeded(db_session):
@@ -127,11 +214,11 @@ def test_execute_idempotent_skip_succeeded(db_session):
     settings.call_results_bitrix_execution_enabled = True
     gw = FakeBitrixGateway()
     svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
-    svc.execute_import(imp.id)
-    stats = svc.execute_import(imp.id)
+    svc.execute_import(imp.id, responsible_user_id=42)
+    stats = svc.execute_import(imp.id, responsible_user_id=42)
     assert stats["skipped"] >= 1
-    assert len(gw.todos) == 1
-    assert len(gw.comments) == 1
+    assert len(gw.tasks) == 1
+    assert len(gw.comments) == 0
 
 
 def test_process_callback_later_adds_outcome_comment(db_session):
@@ -187,7 +274,102 @@ def test_execute_refusal_comment(db_session):
     stats = svc.execute_row(row, imp)
     assert stats["succeeded"] >= 1
     assert len(gw.comments) == 1
-    assert len(gw.todos) == 0
+    assert len(gw.tasks) == 0
+
+
+def test_execute_task_without_responsible_fails(db_session):
+    from app.config import get_settings
+
+    imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
+    settings.bitrix_service_user_id = 0
+    db_session.commit()
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway()
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_import(imp.id)
+    task_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "tasks.task.add"]
+    assert stats["failed"] >= 1
+    assert task_actions[0].execution_status == "failed"
+    assert "ответственного" in (task_actions[0].last_error or "").lower()
+    assert len(gw.tasks) == 0
+
+
+def test_execute_task_responsible_fallback_service_user(db_session):
+    from app.config import get_settings
+
+    imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
+    settings.bitrix_service_user_id = 77
+    db_session.commit()
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway()
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    svc.execute_import(imp.id)
+    assert gw.tasks[0]["fields"]["RESPONSIBLE_ID"] == 77
+
+
+def test_execute_task_fails_without_deal_id(db_session):
+    from app.config import get_settings
+    from app.models import BitrixPreparedAction
+
+    imp, row, settings, orch = _process_csv(db_session, HOT_ROW_CSV)
+    row.matched_deal_id = None
+    db_session.add(
+        BitrixPreparedAction(
+            import_id=imp.id,
+            import_row_id=row.id,
+            action_group_id="orphan-task",
+            method="tasks.task.add",
+            action_type="task",
+            operation_type="bitrix_add_task",
+            payload={"fields": {"TITLE": "T", "UF_CRM_TASK": ["D_0"]}},
+            human_summary="task",
+            validation_status="valid",
+            is_enabled=True,
+            idempotency_key="orphan-task",
+        )
+    )
+    db_session.commit()
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway()
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_row(row, imp)
+    task = [a for a in orch.repo.list_actions(imp.id) if a.method == "tasks.task.add"][-1]
+    assert task.execution_status == "failed"
+    assert "сделки" in (task.last_error or "").lower()
+    assert len(gw.tasks) == 0
+
+
+def test_execute_task_responsible_mismatch_uses_api_link(db_session):
+    from app.config import get_settings
+
+    imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
+    settings.bitrix_service_user_id = 42
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway(verify_mismatch=True)
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_import(imp.id)
+    task_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "tasks.task.add"]
+    assert stats["succeeded"] >= 1
+    assert task_actions[0].execution_status == "succeeded"
+    payload = task_actions[0].response_payload
+    assert payload.get("bitrix_task_link_source") == "api_link"
+    assert "/user/43/tasks/task/view/1/" in payload.get("bitrix_task_url", "")
+    assert payload.get("responsible_user_id") == 43
+    assert payload.get("warning")
+
+
+def test_execute_task_empty_id_fails(db_session):
+    from app.config import get_settings
+
+    imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
+    settings.call_results_bitrix_execution_enabled = True
+    gw = FakeBitrixGateway(empty_task_id=True)
+    svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
+    stats = svc.execute_import(imp.id)
+    task_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "tasks.task.add"]
+    assert stats["failed"] >= 1
+    assert task_actions[0].execution_status == "failed"
+    assert len(gw.tasks) == 0
 
 
 def test_execute_blocks_manual_review(db_session):
@@ -202,15 +384,19 @@ def test_execute_blocks_manual_review(db_session):
     svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
     stats = svc.execute_import(imp.id, row_ids=[row.id])
     assert stats["blocked"] == 1
-    assert len(gw.todos) == 0
+    assert len(gw.tasks) == 0
 
 
 def test_execute_api_enabled(client, db_session, monkeypatch):
     from app.config import get_settings
+    from app.services.auth_service import AuthService
 
     with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
         imp, _, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
         settings.call_results_bitrix_execution_enabled = True
+        user = AuthService(settings, db_session).get_default_ie_user()
+        user.crm_user_external_id = 42
+        db_session.commit()
 
         def sync_execute(import_id, **kw):
             gw = FakeBitrixGateway()
@@ -225,3 +411,35 @@ def test_execute_api_enabled(client, db_session, monkeypatch):
             json={"confirmation_token": "EXECUTE"},
         )
         assert resp.status_code == 200
+
+
+def test_execute_status_with_row_ids_returns_response_payload(client, db_session, monkeypatch):
+    from app.config import get_settings
+    from app.services.auth_service import AuthService
+
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        imp, row, settings, orch = _process_csv(db_session, HOT_ROW_CSV)
+        settings.call_results_bitrix_execution_enabled = True
+        user = AuthService(settings, db_session).get_default_ie_user()
+        user.crm_user_external_id = 42
+        db_session.commit()
+
+        gw = FakeBitrixGateway()
+        CrmActionService(db_session, settings, PORTAL, gateway=gw).execute_import(
+            imp.id, row_ids=[row.id], responsible_user_id=42,
+        )
+
+        resp = client.get(
+            f"/api/call-results/imports/{imp.id}/execute/status",
+            params={"row_ids": str(row.id)},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["execute_status"] in ("completed", "partial")
+        assert data["succeeded"] >= 1
+        assert data["items"] is not None
+        assert len(data["items"]) >= 1
+        succeeded = [i for i in data["items"] if i["execution_status"] == "succeeded"]
+        assert succeeded
+        assert succeeded[0]["response_payload"] is not None
+        assert succeeded[0]["source_row_number"] == row.source_row_number

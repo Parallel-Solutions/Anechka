@@ -15,7 +15,7 @@ from app.config import BASE_DIR, get_export_dir, get_settings
 from app.database import SessionLocal, engine
 from app.dependencies import get_app_settings
 from app.logging_config import setup_logging
-from app.routers import admin_bitrix, ai, bitrix, call_results, exports, intelligent_export, pages, settings
+from app.routers import admin_bitrix, ai, auth, bitrix, call_results, exports, intelligent_export, pages, settings
 from app.services.job_service import JobService
 from app.services.ai_prompt_service import AiPromptService
 
@@ -112,6 +112,7 @@ static_dir = BASE_DIR / "app" / "static"
 app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 app.include_router(pages.router)
+app.include_router(auth.router)
 app.include_router(settings.router)
 app.include_router(bitrix.router)
 app.include_router(exports.router)
@@ -127,14 +128,13 @@ def health():
 
 
 @app.middleware("http")
-async def enforce_basic_auth(request, call_next):
+async def enforce_session_auth(request, call_next):
     from app.config import get_settings
-    from app.middleware.basic_auth import basic_auth_required
+    from app.middleware.session_auth import session_auth_required
 
+    request.state.user = None
     settings = get_settings()
-    if not settings.basic_auth_password:
-        return await call_next(request)
-    denied = basic_auth_required(request, settings.basic_auth_username, settings.basic_auth_password)
+    denied = session_auth_required(request, settings)
     if denied is not None:
         return denied
     return await call_next(request)

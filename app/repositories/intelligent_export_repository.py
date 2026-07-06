@@ -1,8 +1,6 @@
 """Persistence for the intelligent export subsystem.
 
-Every method is scoped: it requires the acting user and portal so a caller can
-never read or mutate another user's conversation/plan/run. Ownership and
-portal are checked on every access (no bare ``get_by_id``).
+Methods are scoped by portal. All authenticated users can access all portal data.
 """
 
 from __future__ import annotations
@@ -52,10 +50,6 @@ class ScopeContext:
     def user_id(self) -> int:
         return self.user.id
 
-    @property
-    def is_admin(self) -> bool:
-        return self.user.role == "admin"
-
 
 class IntelligentExportRepository:
     def __init__(self, db: Session, scope: ScopeContext):
@@ -78,7 +72,6 @@ class IntelligentExportRepository:
     def list_conversations(self, include_archived: bool = False) -> list[IeConversation]:
         stmt = select(IeConversation).where(
             IeConversation.portal_id == self.scope.portal_id,
-            IeConversation.user_id == self.scope.user_id,
         )
         if not include_archived:
             stmt = stmt.where(IeConversation.status == "active")
@@ -89,8 +82,6 @@ class IntelligentExportRepository:
         conv = self.db.get(IeConversation, conversation_id)
         if conv is None or conv.portal_id != self.scope.portal_id:
             raise IeNotFound("conversation not found")
-        if conv.user_id != self.scope.user_id and not self.scope.is_admin:
-            raise IeAccessDenied("not your conversation")
         return conv
 
     def update_conversation(self, conversation_id: int, *, title: str | None = None, status: str | None = None) -> IeConversation:
@@ -238,14 +229,12 @@ class IntelligentExportRepository:
         run = self.db.get(IeExportRun, run_id)
         if run is None or run.portal_id != self.scope.portal_id:
             raise IeNotFound("run not found")
-        if run.user_id != self.scope.user_id and not self.scope.is_admin:
-            raise IeAccessDenied("not your run")
         return run
 
     def list_runs(self) -> list[IeExportRun]:
         stmt = (
             select(IeExportRun)
-            .where(IeExportRun.portal_id == self.scope.portal_id, IeExportRun.user_id == self.scope.user_id)
+            .where(IeExportRun.portal_id == self.scope.portal_id)
             .order_by(IeExportRun.id.desc())
         )
         return list(self.db.scalars(stmt))
@@ -268,11 +257,6 @@ class IntelligentExportRepository:
         include_inactive: bool = False,
     ) -> list[IeMemoryEntry]:
         stmt = select(IeMemoryEntry).where(IeMemoryEntry.portal_id == self.scope.portal_id)
-        # visibility: project memory is visible to all; user memory only to owner
-        stmt = stmt.where(
-            (IeMemoryEntry.scope == "project")
-            | ((IeMemoryEntry.scope == "user") & (IeMemoryEntry.user_id == self.scope.user_id))
-        )
         if scope:
             stmt = stmt.where(IeMemoryEntry.scope == scope)
         if kind:
@@ -307,8 +291,6 @@ class IntelligentExportRepository:
         entry = self.db.get(IeMemoryEntry, memory_id)
         if entry is None or entry.portal_id != self.scope.portal_id:
             raise IeNotFound("memory not found")
-        if entry.scope == "user" and entry.user_id != self.scope.user_id and not self.scope.is_admin:
-            raise IeAccessDenied("not your memory")
         return entry
 
     def create_memory(

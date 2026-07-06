@@ -19,7 +19,8 @@ sys.path.insert(0, str(ROOT))
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["BITRIX_WEBHOOK_URL"] = "https://example.bitrix24.ru/rest/1/token"
 os.environ.setdefault("EXPORT_DIR", str(ROOT / "test_exports"))
-os.environ["BASIC_AUTH_PASSWORD"] = ""
+os.environ["APP_AUTH_DISABLED"] = "1"
+os.environ["CALL_RESULTS_BITRIX_EXECUTION_ENABLED"] = "false"
 
 from app.config import get_settings
 
@@ -42,13 +43,14 @@ importlib.reload(main_module)
 
 
 def _reload_app_with_auth_disabled() -> None:
-    os.environ["BASIC_AUTH_PASSWORD"] = ""
+    os.environ["APP_AUTH_DISABLED"] = "1"
+    os.environ["CALL_RESULTS_BITRIX_EXECUTION_ENABLED"] = "false"
     get_settings.cache_clear()
     importlib.reload(main_module)
 
 
 @pytest.fixture(autouse=True)
-def _disable_basic_auth_for_tests():
+def _disable_auth_for_tests():
     _reload_app_with_auth_disabled()
     yield
     _reload_app_with_auth_disabled()
@@ -81,3 +83,15 @@ def client(db_session):
     with TestClient(main_module.app, raise_server_exceptions=True) as c:
         yield c
     main_module.app.dependency_overrides.clear()
+
+
+@pytest.fixture()
+def auth_client(client, db_session):
+    from app.config import get_settings
+    from app.services.auth_service import AuthService
+
+    auth = AuthService(get_settings(), db_session)
+    user = auth.create_user("test@example.com", "secret12", display_name="Test User")
+    res = client.post("/auth/login", json={"email": user.email, "password": "secret12"})
+    assert res.status_code == 200
+    return client

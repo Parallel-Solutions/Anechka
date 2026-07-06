@@ -15,7 +15,6 @@ class PayloadValidation:
 
 class BitrixPayloadValidator:
     FORBIDDEN_METHODS = frozenset({
-        "tasks.task.add",
         "bitrix_archive_deal",
         "crm.item.update",
     })
@@ -42,9 +41,20 @@ class BitrixPayloadValidator:
             if not payload.get("title"):
                 errors.append("title обязателен")
             if not payload.get("responsibleId"):
-                errors.append("responsibleId обязателен")
+                warnings.append("responsibleId будет назначен при отправке")
             if not payload.get("deadline"):
                 warnings.append("deadline не указан")
+
+        elif method == "tasks.task.add":
+            fields = payload.get("fields") or payload
+            if not fields.get("TITLE"):
+                errors.append("TITLE обязателен")
+            if not fields.get("UF_CRM_TASK"):
+                errors.append("UF_CRM_TASK обязателен")
+            if not fields.get("RESPONSIBLE_ID"):
+                warnings.append("RESPONSIBLE_ID будет назначен при отправке")
+            if not fields.get("DEADLINE"):
+                warnings.append("DEADLINE не указан")
 
         elif method in ("crm.contact.add", "crm.contact.update"):
             if not payload.get("fields") and not payload.get("contact"):

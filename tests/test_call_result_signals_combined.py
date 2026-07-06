@@ -19,7 +19,7 @@ def test_positive_plus_callback_later():
     )
     actions = BitrixActionPlanner().plan(row, bitrix_deal_id=1, assigned_by_id=1, signals=sig, requires_manual=False)
     ops = {a.operation_type for a in actions}
-    assert "bitrix_add_todo" in ops
+    assert "bitrix_add_task" in ops
     assert "retry_queue_add" in ops
 
 

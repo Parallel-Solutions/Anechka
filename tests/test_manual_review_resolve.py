@@ -177,7 +177,7 @@ def test_manual_resolve_comment_prepares_action(client, db_session):
     assert api_row["row_filter"] == "new_comments"
 
 
-def test_manual_resolve_todo_without_responsible(client, db_session):
+def test_manual_resolve_todo_without_deal(client, db_session):
     from app.config import get_settings
 
     _seed_crm(db_session, deal_assigned={1001: None})
@@ -192,13 +192,14 @@ def test_manual_resolve_todo_without_responsible(client, db_session):
     db_session.commit()
     orch.process_import(imp.id)
     row = orch.repo.list_rows(imp.id)[0]
+    row.matched_deal_id = None
     row.needs_manual_review = True
     row.execution_status = "blocked_manual_review"
     db_session.commit()
 
     resp = _resolve(client, imp.id, row.id, "todo")
     assert resp.status_code == 400
-    assert "ответствен" in resp.json()["detail"].lower()
+    assert "сделк" in resp.json()["detail"].lower()
 
 
 def test_manual_resolve_todo_prepares_action(client, db_session):
@@ -206,7 +207,7 @@ def test_manual_resolve_todo_prepares_action(client, db_session):
     resp = _resolve(client, imp.id, row.id, "todo")
     assert resp.status_code == 200, resp.text
     data = resp.json()
-    assert data["prepared_method"] == "crm.activity.todo.add"
+    assert data["prepared_method"] == "tasks.task.add"
 
     db_session.refresh(row)
     assert row.needs_manual_review is False
@@ -259,9 +260,8 @@ def test_manual_resolve_find_contact_no_candidate(client, db_session):
     assert resp.status_code == 422
 
 
-def test_manual_resolve_prepared_row(client, db_session):
+def test_manual_resolve_prepared_row_rejects_non_manual_review(client, db_session):
     from app.config import get_settings
-    from app.repositories.call_result_repository import CallResultRepository
 
     _seed_crm(db_session)
     settings = get_settings()
@@ -279,19 +279,8 @@ def test_manual_resolve_prepared_row(client, db_session):
     assert row.execution_status == "prepared"
 
     resp = _resolve(client, imp.id, row.id, "comment")
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["action"] == "comment"
-    assert data["prepared_method"] == "crm.timeline.comment.add"
-
-    db_session.refresh(row)
-    assert row.needs_manual_review is False
-    assert row.execution_status == "prepared"
-    assert row.classification_source == "manual"
-
-    repo = CallResultRepository(db_session, PORTAL)
-    actions = [a for a in repo.list_actions(imp.id) if a.import_row_id == row.id]
-    assert any(a.method == "crm.timeline.comment.add" for a in actions)
+    assert resp.status_code == 409
+    assert "не требует" in resp.json()["detail"].lower()
 
 
 def test_manual_resolve_without_deal(client, db_session):
@@ -409,6 +398,28 @@ def test_manual_resolve_create_contact_no_phone(client, db_session, monkeypatch)
     resp = _resolve(client, imp.id, row.id, "create_contact")
     assert resp.status_code == 400
     assert "телефон" in resp.json()["detail"].lower()
+
+
+def test_manual_preview_comment_without_deal(client, db_session):
+    imp, row = _process_and_flag_manual(db_session)
+    row.matched_deal_id = None
+    row.match_status = "not_found"
+    db_session.commit()
+
+    resp = _preview(client, imp.id, row.id, "comment")
+    assert resp.status_code == 400
+    assert "сделк" in resp.json()["detail"].lower()
+
+
+def test_manual_preview_without_needs_manual_review(client, db_session):
+    imp, row = _process_and_flag_manual(db_session)
+    row.needs_manual_review = False
+    row.execution_status = "prepared"
+    db_session.commit()
+
+    resp = _preview(client, imp.id, row.id, "comment")
+    assert resp.status_code == 409
+    assert "не требует" in resp.json()["detail"].lower()
 
 
 def test_manual_preview_comment_returns_transcript(client, db_session):

@@ -13,6 +13,7 @@ from app.config import Settings
 from app.models import BitrixPreparedAction, CallResultImportRow, utcnow
 from app.repositories.call_result_repository import CallResultRepository
 from app.services.call_results.llm_schema import AlternateContactData, CallResultSignals, compute_primary_outcome
+from app.services.call_results.hangup_replacement_resolver import lookup_hangup_replacement_contact
 from app.services.call_results.lpr_contact_search_provider import (
     LprContactSearchError,
     LprContactSearchProvider,
@@ -74,6 +75,33 @@ class ManualResolveConfirm:
     found_phone: str | None = None
 
 
+def get_available_manual_actions(
+    row: CallResultImportRow,
+    *,
+    contact_creation_allowed: bool,
+) -> list[ManualResolveAction]:
+    available: list[ManualResolveAction] = []
+    if row.matched_deal_id:
+        available.extend(["comment", "todo", "find_contact"])
+    if contact_creation_allowed and (row.normalized_phone or row.raw_phone):
+        available.append("create_contact")
+    return available
+
+
+def is_pending_manual_review_row(
+    row: CallResultImportRow,
+    *,
+    contact_creation_allowed: bool,
+) -> bool:
+    if not row.needs_manual_review:
+        return False
+    if row.operator_filter:
+        return False
+    if row.execution_status != "blocked_manual_review":
+        return False
+    return bool(get_available_manual_actions(row, contact_creation_allowed=contact_creation_allowed))
+
+
 class ManualReviewService:
     def __init__(
         self,
@@ -94,6 +122,31 @@ class ManualReviewService:
         self.payload_builder = BitrixPayloadBuilder()
         self.payload_validator = BitrixPayloadValidator()
 
+    def _contact_creation_allowed(self) -> bool:
+        return self.orchestrator.marker_validator.contact_creation_allowed()
+
+    def _ensure_manual_review_action(
+        self,
+        row: CallResultImportRow,
+        action: ManualResolveAction,
+    ) -> None:
+        if not row.needs_manual_review:
+            raise ManualReviewError("Строка не требует ручной проверки", status_code=409)
+        available = get_available_manual_actions(
+            row,
+            contact_creation_allowed=self._contact_creation_allowed(),
+        )
+        if action not in available:
+            if action in ("comment", "todo", "find_contact") and not row.matched_deal_id:
+                raise ManualReviewError("Сделка не найдена — действие недоступно")
+            if action == "create_contact":
+                if not self._contact_creation_allowed():
+                    raise ManualReviewError(
+                        "Создание контакта отключено — настройте BITRIX_CALL_SOURCE_FIELD_CODE/VALUE",
+                    )
+                raise ManualReviewError("Нет телефона для создания контакта")
+            raise ManualReviewError(f"Действие «{action}» недоступно для этой строки")
+
     def preview(
         self,
         import_id: int,
@@ -104,8 +157,7 @@ class ManualReviewService:
         if row is None:
             raise ManualReviewError("Строка не найдена", status_code=404)
 
-        if action in ("comment", "todo", "find_contact") and not row.matched_deal_id:
-            raise ManualReviewError("Сделка не найдена — действие недоступно")
+        self._ensure_manual_review_action(row, action)
 
         transcript = self._row_transcript(row)
 
@@ -134,8 +186,7 @@ class ManualReviewService:
         if row is None:
             raise ManualReviewError("Строка не найдена", status_code=404)
 
-        if action in ("comment", "todo", "find_contact") and not row.matched_deal_id:
-            raise ManualReviewError("Сделка не найдена — действие недоступно")
+        self._ensure_manual_review_action(row, action)
 
         confirm = confirm or ManualResolveConfirm()
 
@@ -377,6 +428,8 @@ class ManualReviewService:
             self.matcher.build_indexes()
         deal = self.matcher.get_deal(row.matched_deal_id)
         action = actions[0]
+        row_actions = self.repo.list_actions(import_id)
+        context_actions = [a for a in row_actions if a.import_row_id == row.id]
         pa = PlannedAction(
             method=action.method,
             action_type=action.action_type,
@@ -395,6 +448,7 @@ class ManualReviewService:
             todo_description=todo_description,
             deadline=row.callback_at,
             settings=self.settings,
+            context_actions=context_actions,
         )
         pv = self.payload_validator.validate(action.method, action.payload)
         action.validation_status = pv.status
@@ -457,8 +511,6 @@ class ManualReviewService:
         deal = self.matcher.get_deal(row.matched_deal_id)
         if deal is None:
             raise ManualReviewError("Сделка не найдена — действие недоступно")
-        if not deal.assigned_by_id:
-            raise ManualReviewError("Нет ответственного по сделке")
 
         summary = todo_description or self._existing_summary(row)
         signals = CallResultSignals(
@@ -474,22 +526,22 @@ class ManualReviewService:
             self._patch_action_payload(
                 import_id,
                 row,
-                "crm.activity.todo.add",
+                "tasks.task.add",
                 todo_title=todo_title,
                 todo_description=todo_description,
             )
         actions = [
             a for a in self.repo.list_actions(import_id)
-            if a.import_row_id == row.id and a.method == "crm.activity.todo.add"
+            if a.import_row_id == row.id and a.method == "tasks.task.add"
         ]
         if not actions:
-            raise ManualReviewError("Не удалось подготовить CRM-дело для Битрикс24")
+            raise ManualReviewError("Не удалось подготовить задачу для Битрикс24")
         self._finalize_operator_bucket(import_id, row, OPERATOR_FILTER_BY_ACTION["todo"])
         return ManualResolveResult(
             action="todo",
-            message="CRM-дело подготовлено. Нажмите «Отправить в Bitrix24» для выполнения.",
+            message="Задача подготовлена. Нажмите «Отправить в Bitrix24» для выполнения.",
             row_id=row.id,
-            prepared_method="crm.activity.todo.add",
+            prepared_method="tasks.task.add",
         )
 
     def _resolve_create_contact(
@@ -562,15 +614,10 @@ class ManualReviewService:
                 "reason": "Подтверждено оператором",
             }
         else:
-            try:
-                found = self.lpr_search.find_replacement_contact(
-                    deal_id=int(row.matched_deal_id),
-                    exclude_phone=row.normalized_phone or row.raw_phone,
-                    exclude_contact_id=row.matched_contact_id,
-                )
-            except LprContactSearchError as exc:
-                raise ManualReviewError(str(exc), status_code=422) from exc
-
+            lookup = lookup_hangup_replacement_contact(self.lpr_search, row)
+            if lookup.failed:
+                raise ManualReviewError(lookup.error_message or "Не удалось найти другой контакт", status_code=422)
+            found = lookup.found
             if found is None:
                 raise ManualReviewError(
                     "Не удалось найти другой контакт по правилам ЛПР",

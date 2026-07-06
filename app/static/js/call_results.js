@@ -16,18 +16,55 @@
         deal_not_found: 'Сделка не найдена',
         explicit_refusal: 'Отказ',
         hangup_without_result: 'Сброс трубки',
+        hangup_during_robocall: 'Бросил без разговора',
         replacement_contact_required: 'Перезвон на другой номер',
         needs_manual_review: 'Ручная проверка',
+    };
+
+    const SIGNAL_BADGE_CLASSES = {
+        positive: 'bg-success',
+        alternate_contact_requested: 'bg-info text-dark',
+        callback_later_requested: 'bg-primary',
+        replacement_contact_required: 'bg-primary',
+        no_answer: 'bg-secondary',
+        deal_not_found: 'bg-danger',
+        explicit_refusal: 'bg-danger',
+        hangup_without_result: 'bg-warning text-dark',
+        hangup_during_robocall: 'bg-secondary',
+        needs_manual_review: 'bg-warning text-dark',
+    };
+
+    const HANGUP_REPLACEMENT_SIGNAL_KEYS = ['hangup_without_result', 'replacement_contact_required'];
+    const HANGUP_REPLACEMENT_BADGE = {
+        label: 'Сброс трубки',
+        cls: 'bg-warning text-dark',
     };
 
     const METHOD_DESC = {
         'crm.timeline.comment.add': 'Комментарий в таймлайн сделки (отказ)',
         'crm.activity.todo.add': 'CRM-дело по положительному результату',
+        'tasks.task.add': 'Задача по положительному результату (привязка к сделке)',
         'crm.contact.list': 'Поиск контакта по телефону',
         'crm.contact.add': 'Создание контакта',
         'crm.deal.contact.add': 'Привязка контакта к сделке',
         'retry_queue.add': 'Очередь повторных звонков',
         'contact_search.add': 'Требуется поиск нового контакта',
+    };
+
+    const EXECUTION_STATUS_LABELS = {
+        prepared: 'Ожидает',
+        executing: 'Выполняется',
+        succeeded: 'Успех',
+        failed: 'Ошибка',
+        skipped: 'Пропущено',
+    };
+
+    const EXECUTION_STATUS_BADGE = {
+        prepared: 'bg-secondary',
+        executing: 'bg-primary',
+        succeeded: 'bg-success',
+        failed: 'bg-danger',
+        skipped: 'bg-warning text-dark',
     };
 
     const MATCH_STATUS_LABELS = {
@@ -44,7 +81,7 @@
         { id: 'manual_call', label: 'Ручной обзвон' },
         { id: 'auto_call', label: 'Автоматический обзвон' },
         { id: 'new_contacts', label: 'Новые контакты в битриксе' },
-        { id: 'new_todos', label: 'Новые дела' },
+        { id: 'new_todos', label: 'Новые задачи' },
         { id: 'new_comments', label: 'Новые комментарии' },
     ];
 
@@ -58,8 +95,19 @@
 
     const FILTER_SEND_METHODS = {
         new_contacts: ['crm.contact.list', 'crm.contact.add', 'crm.deal.contact.add'],
-        new_todos: ['crm.activity.todo.add'],
+        new_todos: ['tasks.task.add', 'crm.activity.todo.add'],
         new_comments: ['crm.timeline.comment.add'],
+    };
+
+    const FILTER_MATCHERS = {
+        all: () => true,
+        manual_review: (row) => row.row_filter === 'manual_review',
+        manual_call: (row) =>
+            row.row_filter === 'manual_call' || row.ui_disposition === 'manual_call',
+        auto_call: (row) => row.row_filter === 'auto_call',
+        new_contacts: (row) => row.row_filter === 'new_contacts',
+        new_todos: (row) => row.row_filter === 'new_todos',
+        new_comments: (row) => row.row_filter === 'new_comments',
     };
 
     const MANUAL_BITRIX_SEND_ACTIONS = new Set(['comment', 'todo', 'create_contact']);
@@ -71,9 +119,33 @@
         find_contact: 'auto_call',
     };
 
+    const MANUAL_ACTION_BUTTONS = {
+        comment: (rowId) => `<button type="button" class="btn btn-outline-secondary btn-sm btn-manual-resolve" data-action="comment" data-row-id="${rowId}">Комментарий</button>`,
+        todo: (rowId) => `<button type="button" class="btn btn-outline-primary btn-sm btn-manual-resolve" data-action="todo" data-row-id="${rowId}">Дело</button>`,
+        create_contact: (rowId) => `<button type="button" class="btn btn-outline-success btn-sm btn-manual-resolve" data-action="create_contact" data-row-id="${rowId}">Завести контакт в битриксе</button>`,
+        find_contact: (rowId) => `<button type="button" class="btn btn-primary btn-sm btn-manual-resolve" data-action="find_contact" data-row-id="${rowId}">Найти другой контакт</button>`,
+    };
+
+    function parseApiErrorDetail(detail, fallback) {
+        if (typeof detail === 'string') return detail;
+        if (Array.isArray(detail)) {
+            return detail.map((d) => d.msg || d.message || d).join('; ');
+        }
+        if (detail && typeof detail === 'object') {
+            return detail.message || detail.msg || fallback;
+        }
+        return fallback;
+    }
+
+    function showRowViewError(row, message) {
+        const body = document.getElementById('row-view-body');
+        if (!body) return;
+        body.innerHTML = `${renderManualReviewBody(row)}<div class="alert alert-danger small mt-3 mb-0">${escapeHtml(message)}</div>`;
+    }
+
     const SEND_SUCCESS_MESSAGES = {
         comment: 'Комментарий добавлен в Bitrix24',
-        todo: 'CRM-дело создано в Bitrix24',
+        todo: 'Задача создана в Bitrix24',
         create_contact: 'Контакт создан в Bitrix24',
     };
 
@@ -89,12 +161,16 @@
     let attemptHistoryCache = [];
     let retryQueueCache = [];
     let contactSearchCache = [];
+    let retryQueueLoaded = false;
+    let contactSearchLoaded = false;
+    const FILTERS_NEEDING_RETRY_QUEUE = new Set(['manual_call']);
+    const FILTERS_NEEDING_CONTACT_SEARCH = new Set(['new_contacts']);
     let activeFilterId = 'manual_review';
     let filterInitialized = false;
     let currentImportId = null;
     let rowViewModal = null;
     let filterSendModal = null;
-    let filterSendState = { filterId: null, rowIds: [] };
+    let filterSendState = { filterId: null, rowIds: [], sending: false, sendDone: false };
     let currentViewRowId = null;
     let modalReviewState = {
         mode: 'idle',
@@ -106,6 +182,7 @@
         resolveData: null,
     };
     let diagnosticsCache = null;
+    let currentUserCache = null;
     let lastRowViewWheelNavAt = 0;
     let importPollTimer = null;
     let lastStatusSignature = null;
@@ -375,10 +452,13 @@
                 renderFilteredList(activeFilterId, currentImportId);
             });
         }
-        const hashFilter = getFilterFromHash();
-        if (hashFilter && ROW_FILTERS.some((f) => f.id === hashFilter)) {
-            activeFilterId = hashFilter;
-        }
+        activeFilterId = resolveInitialFilter();
+        window.addEventListener('hashchange', () => {
+            const hashFilter = getFilterFromHash();
+            if (hashFilter && ROW_FILTERS.some((f) => f.id === hashFilter) && hashFilter !== activeFilterId) {
+                setActiveFilter(hashFilter, false);
+            }
+        });
         loadImport(importId);
         document.getElementById('btn-delete-import')?.addEventListener('click', async () => {
             if (!confirm('Удалить импорт?')) return;
@@ -406,7 +486,11 @@
             filterSendModal = new bootstrap.Modal(filterSendModalEl);
         }
         document.getElementById('btn-filter-send-confirm')?.addEventListener('click', () => {
-            if (filterSendState.rowIds.length && currentImportId) {
+            if (filterSendState.sendDone) {
+                filterSendModal?.hide();
+                return;
+            }
+            if (filterSendState.rowIds.length && currentImportId && !filterSendState.sending) {
                 executeFilteredSend(currentImportId, filterSendState.rowIds);
             }
         });
@@ -434,18 +518,10 @@
         manualReviewIds = new Set(data.manual_review_ids || []);
         hangupWithoutAnswersIds = new Set((data.hangup_rows || []).map((r) => r.id));
         attemptHistoryCache = data.attempt_history || [];
-        if (reloadQueues) {
-            await loadQueueCaches(importId);
-        }
-        await loadDiagnosticsCache();
+        resetQueueCacheState();
 
         if (!filterInitialized) {
-            const hashFilter = getFilterFromHash();
-            if (hashFilter && ROW_FILTERS.some((f) => f.id === hashFilter)) {
-                activeFilterId = hashFilter;
-            } else {
-                activeFilterId = 'manual_review';
-            }
+            activeFilterId = resolveInitialFilter();
             filterInitialized = true;
         }
 
@@ -453,7 +529,17 @@
         renderFilteredList(activeFilterId, importId);
         showLlmFailedAlert(importSummaryCache);
         lastStatusSignature = statusSignature(data);
-        updateSendAndExportButton();
+
+        const parallelTasks = [
+            loadDiagnosticsCache(),
+            loadCurrentUserCache(),
+        ];
+        if (reloadQueues && filterNeedsQueueCaches(activeFilterId)) {
+            parallelTasks.push(ensureQueueCachesForFilter(importId, activeFilterId));
+        }
+        void Promise.all(parallelTasks).then(() => {
+            updateSendAndExportButton();
+        });
     }
 
     function sleep(ms) {
@@ -469,10 +555,58 @@
         return diagnosticsCache;
     }
 
-    function canSendToBitrix(resolveData) {
+    async function loadCurrentUserCache() {
+        try {
+            const data = await fetchJson('/auth/me');
+            currentUserCache = data.user || null;
+        } catch (e) {
+            currentUserCache = null;
+        }
+        return currentUserCache;
+    }
+
+    function currentUserBitrixId() {
+        const id = currentUserCache?.crm_user_external_id;
+        return id != null ? id : null;
+    }
+
+    function taskResponsibleUserId(action) {
+        const operatorId = currentUserBitrixId();
+        if (operatorId != null) return operatorId;
+        if (action?.task_responsible_user_id != null) return action.task_responsible_user_id;
+        const serviceId = diagnosticsCache?.bitrix_service_user_id;
+        return serviceId > 0 ? serviceId : null;
+    }
+
+    function applyPreviewResponsibleUser(payload, method, action) {
+        const copy = JSON.parse(JSON.stringify(payload || {}));
+        if (method === 'crm.activity.todo.add') {
+            const userId = taskResponsibleUserId(action);
+            if (userId != null) copy.responsibleId = userId;
+        } else if (method === 'tasks.task.add') {
+            const userId = taskResponsibleUserId(action);
+            if (userId != null) {
+                const fields = { ...(copy.fields || copy) };
+                fields.RESPONSIBLE_ID = userId;
+                fields.CREATED_BY = userId;
+                copy.fields = fields;
+            }
+        }
+        return copy;
+    }
+
+    function canSendToBitrix(resolveData, preparedActions) {
         const execEnabled = resolveData?.execution_enabled ?? diagnosticsCache?.execution_enabled;
         const webhookOk = diagnosticsCache?.bitrix_webhook_configured !== false;
-        return !!execEnabled && webhookOk;
+        if (!execEnabled || !webhookOk) return false;
+        const actions = preparedActions || [];
+        const needsResponsible = actions.some(
+            (a) => (a.method === 'crm.activity.todo.add' || a.method === 'tasks.task.add') && a.is_enabled !== false,
+        );
+        if (needsResponsible) {
+            return actions.some((a) => taskResponsibleUserId(a) != null);
+        }
+        return true;
     }
 
     async function loadImport(importId, opts) {
@@ -509,6 +643,12 @@
         return m ? m[1] : null;
     }
 
+    function resolveInitialFilter() {
+        const hashFilter = getFilterFromHash();
+        if (hashFilter && ROW_FILTERS.some((f) => f.id === hashFilter)) return hashFilter;
+        return 'manual_review';
+    }
+
     function buildActionsIndex(byMethod) {
         importActionsByRowId = {};
         Object.values(byMethod || {}).forEach((actions) => {
@@ -521,29 +661,50 @@
         });
     }
 
-    async function loadQueueCaches(importId) {
-        try {
-            retryQueueCache = await fetchJson(`/api/call-results/retry-queue?import_id=${importId}`);
-        } catch (e) {
-            retryQueueCache = [];
+    function resetQueueCacheState() {
+        retryQueueCache = [];
+        contactSearchCache = [];
+        retryQueueLoaded = false;
+        contactSearchLoaded = false;
+    }
+
+    function filterNeedsQueueCaches(filterId) {
+        return FILTERS_NEEDING_RETRY_QUEUE.has(filterId)
+            || FILTERS_NEEDING_CONTACT_SEARCH.has(filterId);
+    }
+
+    async function loadQueueCaches(importId, { retry = true, contact = true } = {}) {
+        const tasks = [];
+        if (retry && !retryQueueLoaded) {
+            tasks.push(
+                fetchJson(`/api/call-results/retry-queue?import_id=${importId}`)
+                    .then((data) => { retryQueueCache = data; })
+                    .catch(() => { retryQueueCache = []; })
+                    .finally(() => { retryQueueLoaded = true; }),
+            );
         }
-        try {
-            contactSearchCache = await fetchJson(`/api/call-results/contact-search?import_id=${importId}`);
-        } catch (e) {
-            contactSearchCache = [];
+        if (contact && !contactSearchLoaded) {
+            tasks.push(
+                fetchJson(`/api/call-results/contact-search?import_id=${importId}`)
+                    .then((data) => { contactSearchCache = data; })
+                    .catch(() => { contactSearchCache = []; })
+                    .finally(() => { contactSearchLoaded = true; }),
+            );
+        }
+        if (tasks.length) {
+            await Promise.all(tasks);
         }
     }
 
-    function getFilterContext() {
-        return {
-            manualReviewIds,
-            hangupWithoutAnswersIds,
-            importActionsByRowId,
-        };
+    async function ensureQueueCachesForFilter(importId, filterId) {
+        const needRetry = FILTERS_NEEDING_RETRY_QUEUE.has(filterId) && !retryQueueLoaded;
+        const needContact = FILTERS_NEEDING_CONTACT_SEARCH.has(filterId) && !contactSearchLoaded;
+        if (!needRetry && !needContact) return;
+        await loadQueueCaches(importId, { retry: needRetry, contact: needContact });
     }
 
-    function getRowActions(row, ctx) {
-        return (ctx?.importActionsByRowId || importActionsByRowId)[row.id] || [];
+    function getRowActions(row) {
+        return importActionsByRowId[row.id] || [];
     }
 
     function isEnabledAction(action) {
@@ -551,8 +712,9 @@
     }
 
     function rowMatchesFilter(row, filterId) {
-        if (filterId === 'all') return true;
-        return row.row_filter === filterId;
+        const match = FILTER_MATCHERS[filterId];
+        if (!match) return false;
+        return match(row);
     }
 
     function getFilteredRows(filterId) {
@@ -686,6 +848,120 @@
         return getRowActions(row).filter((a) => isEnabledAction(a) && methods.has(a.method));
     }
 
+    function renderExecutionStatusBadge(status) {
+        const s = status || 'prepared';
+        const cls = EXECUTION_STATUS_BADGE[s] || 'bg-secondary';
+        const label = EXECUTION_STATUS_LABELS[s] || s;
+        return `<span class="badge ${cls} filter-send-status">${escapeHtml(label)}</span>`;
+    }
+
+    function resetFilterSendModalUi() {
+        const progressEl = document.getElementById('filter-send-progress');
+        const confirmBtn = document.getElementById('btn-filter-send-confirm');
+        if (progressEl) {
+            progressEl.classList.add('d-none');
+            progressEl.innerHTML = '';
+        }
+        if (confirmBtn) {
+            confirmBtn.textContent = 'Отправить в Битрикс24';
+            confirmBtn.classList.remove('btn-outline-secondary');
+            confirmBtn.classList.add('btn-success');
+            confirmBtn.disabled = false;
+        }
+        filterSendState.sending = false;
+        filterSendState.sendDone = false;
+    }
+
+    function renderFilterSendProgress(data) {
+        const items = data?.items || [];
+        const total = items.length;
+        if (!total) {
+            return '<div class="d-flex align-items-center gap-2"><div class="spinner-border spinner-border-sm"></div><span>Отправка в Bitrix24…</span></div>';
+        }
+        const done = items.filter((i) => ['succeeded', 'failed', 'skipped'].includes(i.execution_status)).length;
+        const failed = items.filter((i) => i.execution_status === 'failed').length;
+        const executing = data?.execute_status === 'executing' || done < total;
+        if (executing) {
+            return `<div class="d-flex align-items-center gap-2"><div class="spinner-border spinner-border-sm"></div><span>Отправка… ${done} из ${total}</span></div>`;
+        }
+        const cls = failed ? 'alert-warning' : 'alert-success';
+        const succeeded = done - failed;
+        return `<div class="alert ${cls} small mb-0 py-2">Готово: ${succeeded} успешно, ${failed} с ошибкой</div>`;
+    }
+
+    function formatBitrixExternalId(externalId) {
+        if (!externalId) return '';
+        const raw = String(externalId).trim();
+        if (/^\d+$/.test(raw)) return raw;
+        const match = raw.match(/['"]?id['"]?\s*[:=]\s*(\d+)/i);
+        return match ? match[1] : raw;
+    }
+
+    function renderBitrixExternalId(item) {
+        if (!item.external_id) return '';
+        const label = formatBitrixExternalId(item.external_id);
+        const url = item.bitrix_external_url;
+        const idHtml = url
+            ? bitrixLink(url, label)
+            : `<code>${escapeHtml(label)}</code>`;
+        return `<div class="small text-muted mb-1">ID в Bitrix: ${idHtml}</div>`;
+    }
+
+    function buildSendLogHtml(filterId, rows, logItems) {
+        if (!rows.length) {
+            return '<p class="text-muted mb-0">Нет строк для отправки.</p>';
+        }
+        const itemsByRow = {};
+        (logItems || []).forEach((item) => {
+            if (!itemsByRow[item.import_row_id]) itemsByRow[item.import_row_id] = [];
+            itemsByRow[item.import_row_id].push(item);
+        });
+        return rows.map((row) => {
+            const items = itemsByRow[row.id] || [];
+            const previewActions = getSendPreviewActions(row, filterId);
+            const previewById = {};
+            previewActions.forEach((a) => { previewById[a.id] = a; });
+            const actionsHtml = items.length
+                ? items.map((item) => {
+                    const previewAction = previewById[item.id];
+                    const requestDetails = previewAction
+                        ? `<details class="mb-2"><summary class="small text-muted">Запрос</summary><pre class="filter-send-payload small mb-0 mt-1">${escapeHtml(JSON.stringify(applyPreviewResponsibleUser(previewAction.payload, previewAction.method, previewAction), null, 2))}</pre></details>`
+                        : '';
+                    const errHtml = item.last_error
+                        ? `<div class="small text-danger mb-1">${escapeHtml(item.last_error)}</div>`
+                        : '';
+                    const extHtml = renderBitrixExternalId(item);
+                    const terminal = ['succeeded', 'failed', 'skipped'].includes(item.execution_status);
+                    const respJson = item.response_payload != null
+                        ? JSON.stringify(item.response_payload, null, 2)
+                        : (terminal ? '{}' : '—');
+                    return `
+                    <div class="filter-send-action mb-2">
+                        <div class="d-flex align-items-center gap-2 mb-1 flex-wrap">
+                            <span class="small fw-semibold">${escapeHtml(METHOD_DESC[item.method] || item.method)}</span>
+                            ${renderExecutionStatusBadge(item.execution_status)}
+                        </div>
+                        <div class="small text-muted mb-1">${escapeHtml(item.human_summary || '')}</div>
+                        ${errHtml}
+                        ${extHtml}
+                        ${requestDetails}
+                        <div class="small fw-semibold mt-1">Ответ Bitrix24</div>
+                        <pre class="filter-send-response small mb-0">${escapeHtml(respJson)}</pre>
+                    </div>`;
+                }).join('')
+                : '<p class="small text-muted mb-0">Ожидание действий…</p>';
+            return `
+                <div class="card mb-2 filter-send-row">
+                    <div class="card-header py-2 small">
+                        <strong>Строка ${row.source_row_number}</strong>
+                        <span class="text-muted ms-2">${renderPhoneLink(row.raw_phone)}</span>
+                        <span class="text-muted ms-2">${renderDealCell(row)}</span>
+                    </div>
+                    <div class="card-body py-2 filter-send-preview">${actionsHtml}</div>
+                </div>`;
+        }).join('');
+    }
+
     function buildSendPreviewHtml(filterId, rows) {
         if (!rows.length) {
             return '<p class="text-muted mb-0">Нет строк для отправки.</p>';
@@ -697,7 +973,7 @@
                     <div class="filter-send-action mb-2">
                         <div class="small fw-semibold">${escapeHtml(METHOD_DESC[a.method] || a.method)}</div>
                         <div class="small text-muted">${escapeHtml(a.human_summary || '')}</div>
-                        <pre class="filter-send-payload small mb-0">${escapeHtml(JSON.stringify(a.payload || {}, null, 2))}</pre>
+                        <pre class="filter-send-payload small mb-0">${escapeHtml(JSON.stringify(applyPreviewResponsibleUser(a.payload, a.method, a), null, 2))}</pre>
                     </div>`).join('')
                 : '<p class="small text-muted mb-0">Нет подготовленных запросов.</p>';
             return `
@@ -712,10 +988,44 @@
         }).join('');
     }
 
+    async function pollFilterSendStatus(importId, rowIds, { timeoutMs = 60000, intervalMs = 1000, onUpdate } = {}) {
+        const rowIdsParam = rowIds.join(',');
+        const deadline = Date.now() + timeoutMs;
+        let lastData = null;
+        while (Date.now() < deadline) {
+            const data = await fetchJson(`/api/call-results/imports/${importId}/execute/status?row_ids=${rowIdsParam}`);
+            lastData = data;
+            if (onUpdate) onUpdate(data);
+            const items = data.items || [];
+            if (items.length) {
+                const terminal = items.every((i) => ['succeeded', 'failed', 'skipped'].includes(i.execution_status));
+                if (terminal) {
+                    const failed = items.some((i) => i.execution_status === 'failed');
+                    return { ok: !failed, data };
+                }
+            }
+            if (['completed', 'partial'].includes(data.execute_status) && items.length) {
+                const terminal = items.every((i) => ['succeeded', 'failed', 'skipped'].includes(i.execution_status));
+                if (terminal) {
+                    const failed = items.some((i) => i.execution_status === 'failed');
+                    return { ok: !failed, data };
+                }
+            }
+            await sleep(intervalMs);
+        }
+        const failed = (lastData?.items || []).some((i) => i.execution_status === 'failed');
+        return {
+            ok: false,
+            data: lastData,
+            message: failed ? 'Отправка завершена с ошибками' : 'Превышено время ожидания ответа Bitrix24',
+        };
+    }
+
     async function openFilterSendModal(filterId, importId) {
+        resetFilterSendModalUi();
         const filterDef = getFilterDef(filterId);
         const rows = getFilteredRows(filterId);
-        filterSendState = { filterId, rowIds: rows.map((r) => r.id) };
+        filterSendState = { filterId, rowIds: rows.map((r) => r.id), sending: false, sendDone: false };
 
         const titleEl = document.getElementById('filter-send-title');
         if (titleEl) titleEl.textContent = `Отправка в Битрикс24 — ${filterDef.label}`;
@@ -727,18 +1037,22 @@
         if (bodyEl) bodyEl.innerHTML = buildSendPreviewHtml(filterId, rows);
 
         const executionEnabled = !!diagnosticsCache?.execution_enabled;
+        const bitrixId = currentUserBitrixId();
 
         if (warningEl) {
             if (!executionEnabled) {
                 warningEl.classList.remove('d-none');
                 warningEl.textContent = 'Выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).';
+            } else if (bitrixId == null) {
+                warningEl.classList.remove('d-none');
+                warningEl.textContent = 'У текущего пользователя не указан ID в Bitrix — укажите его в разделе «Пользователи».';
             } else {
                 warningEl.classList.add('d-none');
                 warningEl.textContent = '';
             }
         }
         if (confirmBtn) {
-            confirmBtn.disabled = !executionEnabled || !rows.length;
+            confirmBtn.disabled = !executionEnabled || bitrixId == null || !rows.length;
         }
 
         filterSendModal?.show();
@@ -747,8 +1061,17 @@
     async function executeFilteredSend(importId, rowIds) {
         const alertEl = document.getElementById('import-alert');
         const confirmBtn = document.getElementById('btn-filter-send-confirm');
+        const bodyEl = document.getElementById('filter-send-body');
+        const progressEl = document.getElementById('filter-send-progress');
+        const filterId = filterSendState.filterId;
+        const rows = importRowsCache.filter((r) => rowIds.includes(r.id));
         try {
+            filterSendState.sending = true;
             if (confirmBtn) confirmBtn.disabled = true;
+            if (progressEl) {
+                progressEl.classList.remove('d-none');
+                progressEl.innerHTML = '<div class="d-flex align-items-center gap-2"><div class="spinner-border spinner-border-sm"></div><span>Запуск отправки…</span></div>';
+            }
             const resp = await fetch(`/api/call-results/imports/${importId}/execute`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -756,12 +1079,29 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(data.detail || 'Execute недоступен');
-            filterSendModal?.hide();
-            showAlert(alertEl, data.message || 'Выполнение запущено', 'success');
+            const updateLog = (statusData) => {
+                if (bodyEl) bodyEl.innerHTML = buildSendLogHtml(filterId, rows, statusData.items || []);
+                if (progressEl) progressEl.innerHTML = renderFilterSendProgress(statusData);
+            };
+            updateLog({ items: [], execute_status: 'executing' });
+            const pollResult = await pollFilterSendStatus(importId, rowIds, { onUpdate: updateLog });
+            if (pollResult.data) updateLog(pollResult.data);
+            filterSendState.sending = false;
+            filterSendState.sendDone = true;
+            if (confirmBtn) {
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'Закрыть';
+                confirmBtn.classList.remove('btn-success');
+                confirmBtn.classList.add('btn-outline-secondary');
+            }
             loadImport(importId, { fullReload: true });
+            const pageMsg = pollResult.ok
+                ? 'Отправка в Bitrix24 завершена'
+                : (pollResult.message || 'Отправка завершена с ошибками');
+            showAlert(alertEl, pageMsg, pollResult.ok ? 'success' : (pollResult.data ? 'warning' : 'danger'));
         } catch (e) {
+            filterSendState.sending = false;
             showAlert(alertEl, e.message, 'danger');
-        } finally {
             if (confirmBtn) confirmBtn.disabled = false;
         }
     }
@@ -855,13 +1195,30 @@
         activeFilterId = filterId;
         renderSummaryFilters(importSummaryCache, filterId);
         renderFilteredList(filterId, currentImportId);
+        if (currentImportId && filterNeedsQueueCaches(filterId)) {
+            void ensureQueueCachesForFilter(currentImportId, filterId).then(() => {
+                updateSendAndExportButton();
+            });
+        }
     }
 
-    function renderSummaryFilters(_s, activeId) {
+    function getFilterCount(filterId, summary) {
+        if (filterId === 'all') return importRowsCache.length;
+        if (filterId === 'manual_call' && summary?.manual_call_inclusive != null) {
+            return summary.manual_call_inclusive;
+        }
+        const counts = summary?.filter_counts;
+        if (counts && Object.prototype.hasOwnProperty.call(counts, filterId)) {
+            return counts[filterId];
+        }
+        return getFilteredRows(filterId).length;
+    }
+
+    function renderSummaryFilters(summary, activeId) {
         const el = document.getElementById('summary-cards');
         if (!el) return;
         el.innerHTML = ROW_FILTERS.map((f) => {
-            const count = getFilteredRows(f.id).length;
+            const count = getFilterCount(f.id, summary);
             const isActive = f.id === activeId;
             const zeroClass = count === 0 ? ' summary-filter-card--zero' : '';
             return `<div class="col-6 col-md-4 col-lg">
@@ -1035,13 +1392,17 @@
         return renderTranscriptBlock(row) + renderContextBlock(row);
     }
 
-    function renderManualReviewFooter(rowId) {
-        return `
-            <button type="button" class="btn btn-outline-secondary btn-sm btn-manual-resolve" data-action="comment" data-row-id="${rowId}">Комментарий</button>
-            <button type="button" class="btn btn-outline-primary btn-sm btn-manual-resolve" data-action="todo" data-row-id="${rowId}">Дело</button>
-            <button type="button" class="btn btn-outline-success btn-sm btn-manual-resolve" data-action="create_contact" data-row-id="${rowId}">Завести контакт в битриксе</button>
-            <button type="button" class="btn btn-primary btn-sm btn-manual-resolve" data-action="find_contact" data-row-id="${rowId}">Найти другой контакт</button>
-        `;
+    function renderManualReviewFooter(row) {
+        const rowId = row.id;
+        const actions = row.available_manual_actions || [];
+        if (!actions.length) {
+            return `<span class="text-muted small me-2">Нет доступных действий</span>
+                <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>`;
+        }
+        return actions.map((action) => {
+            const render = MANUAL_ACTION_BUTTONS[action];
+            return render ? render(rowId) : '';
+        }).join('');
     }
 
     function renderPreviewConfirmFooter(rowId) {
@@ -1061,6 +1422,8 @@
             hints.push('<div class="alert alert-warning small mb-3 py-2">Отправка в Bitrix отключена (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false). Действие будет только подготовлено.</div>');
         } else if (!diag.bitrix_webhook_configured) {
             hints.push('<div class="alert alert-warning small mb-3 py-2">Webhook Bitrix24 не настроен — отправка недоступна.</div>');
+        } else if (currentUserBitrixId() == null && (diag.bitrix_service_user_id || 0) <= 0) {
+            hints.push('<div class="alert alert-warning small mb-3 py-2">Для задач и CRM-дел укажите ответственного по сделке или BITRIX_SERVICE_USER_ID.</div>');
         }
         return hints.join('');
     }
@@ -1077,7 +1440,7 @@
             }
         }
         const sendWarning = !sendResult && !canSendToBitrix()
-            ? '<div class="alert alert-warning small mb-2 py-2">Отправка в Bitrix недоступна. Проверьте CALL_RESULTS_BITRIX_EXECUTION_ENABLED и webhook.</div>'
+            ? '<div class="alert alert-warning small mb-2 py-2">Отправка в Bitrix недоступна. Проверьте CALL_RESULTS_BITRIX_EXECUTION_ENABLED, webhook и ответственного по сделке (или BITRIX_SERVICE_USER_ID).</div>'
             : '';
         return `${renderTranscriptBlock(row)}${renderContextBlock(row)}
             <div class="row-view-section manual-prepared-section border border-success rounded p-3 bg-white mt-3">
@@ -1115,7 +1478,7 @@
     function renderPreviewSection(action, previewData) {
         const heading = {
             comment: 'Текст комментария',
-            todo: 'CRM-дело',
+            todo: 'Задача',
             create_contact: 'Новый контакт',
             find_contact: 'Найденный контакт',
         }[action] || 'Превью';
@@ -1209,8 +1572,12 @@
         document.getElementById('row-view-body').innerHTML = renderManualReviewBody(row);
         const footer = document.getElementById('row-view-footer');
         if (footer) {
-            footer.innerHTML = renderManualReviewFooter(rowId);
-            bindManualReviewActions(importId, rowId);
+            if (row.manual_review_pending) {
+                footer.innerHTML = renderManualReviewFooter(row);
+                bindManualReviewActions(importId, rowId);
+            } else {
+                footer.innerHTML = '<button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>';
+            }
         }
     }
 
@@ -1355,6 +1722,7 @@
         const footer = document.getElementById('row-view-footer');
         if (MANUAL_BITRIX_SEND_ACTIONS.has(action) && !diagnosticsCache) {
             await loadDiagnosticsCache();
+            await loadCurrentUserCache();
         }
         footer?.querySelectorAll('.btn-manual-resolve').forEach((btn) => { btn.disabled = true; });
         if (body) {
@@ -1369,9 +1737,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) {
-                const detail = data.detail;
-                const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map((d) => d.msg || d).join('; ') : 'Ошибка превью');
-                throw new Error(msg);
+                throw new Error(parseApiErrorDetail(data.detail, 'Ошибка превью'));
             }
             modalReviewState = { mode: 'preview', action, previewData: data, preparedRowId: null, preparedMessage: null, sendResult: null };
             const row = importRowsCache.find((r) => r.id === rowId);
@@ -1381,8 +1747,13 @@
                 bindPreviewConfirmActions(importId, rowId);
             }
         } catch (e) {
+            const row = importRowsCache.find((r) => r.id === rowId);
+            if (row) showRowViewError(row, e.message);
             showAlert(alertEl, e.message, 'danger');
-            resetManualReviewModal(importId, rowId);
+            if (footer && row?.manual_review_pending) {
+                footer.innerHTML = renderManualReviewFooter(row);
+                bindManualReviewActions(importId, rowId);
+            }
         }
     }
 
@@ -1399,9 +1770,7 @@
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) {
-                const detail = data.detail;
-                const msg = typeof detail === 'string' ? detail : (Array.isArray(detail) ? detail.map((d) => d.msg || d).join('; ') : 'Ошибка действия');
-                throw new Error(msg);
+                throw new Error(parseApiErrorDetail(data.detail, 'Ошибка действия'));
             }
             if (MANUAL_BITRIX_SEND_ACTIONS.has(action)) {
                 showAlert(alertEl, data.message || 'Подготовлено', 'success');
@@ -1427,6 +1796,8 @@
                 }
             }
         } catch (e) {
+            const row = importRowsCache.find((r) => r.id === rowId);
+            if (row) showRowViewError(row, e.message);
             showAlert(alertEl, e.message, 'danger');
             footer?.querySelectorAll('.btn-manual-confirm, .btn-manual-cancel').forEach((btn) => { btn.disabled = false; });
         }
@@ -1506,8 +1877,8 @@
         } else {
             if (bodyEl) bodyEl.innerHTML = renderManualReviewBody(row);
             if (footer) {
-                if (row.row_filter === 'manual_review') {
-                    footer.innerHTML = renderManualReviewFooter(rowId);
+                if (row.manual_review_pending) {
+                    footer.innerHTML = renderManualReviewFooter(row);
                     bindManualReviewActions(importId, rowId);
                 } else {
                     footer.innerHTML = '<button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Закрыть</button>';
@@ -1531,13 +1902,22 @@
         if (!signals) {
             return `<span class="text-muted"${titleAttr}>—</span>`;
         }
-        const badges = Object.entries(SIGNAL_LABELS)
-            .filter(([k]) => signals[k])
-            .map(([k, label]) => {
-                const cls = k === 'needs_manual_review' ? 'bg-warning text-dark' : 'bg-primary';
-                return `<span class="badge ${cls} me-1">${label}</span>`;
-            })
-            .join('');
+        const showHangupReplacement =
+            signals.hangup_without_result && signals.replacement_contact_required;
+        const skipKeys = showHangupReplacement ? new Set(HANGUP_REPLACEMENT_SIGNAL_KEYS) : new Set();
+        const parts = [];
+        if (showHangupReplacement) {
+            parts.push(
+                `<span class="badge ${HANGUP_REPLACEMENT_BADGE.cls} me-1">${HANGUP_REPLACEMENT_BADGE.label}</span>`,
+            );
+        }
+        Object.entries(SIGNAL_LABELS)
+            .filter(([k]) => signals[k] && !skipKeys.has(k))
+            .forEach(([k, label]) => {
+                const cls = SIGNAL_BADGE_CLASSES[k] || 'bg-primary';
+                parts.push(`<span class="badge ${cls} me-1">${label}</span>`);
+            });
+        const badges = parts.join('');
         if (badges) return badges;
         return `<span class="text-muted"${titleAttr}>—</span>`;
     }

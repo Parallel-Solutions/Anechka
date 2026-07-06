@@ -18,6 +18,10 @@ RELIABLE_DNC = {"do not call", "dnc", "не звонить", "отказ от з
 REFUSAL_KEYWORDS = ["отказ", "не интерес", "не нужно", "не планиру", "не звоните"]
 HOT_KEYWORDS = ["кп", "коммерческ", "потребност", "интерес", "тз", "закупк"]
 CALLBACK_KEYWORDS = ["перезвон", "добавочн", "позвонить", "связаться", "уточнить"]
+ENTRY_FIELD = "вход"
+SHORT_ROBOCALL_GREETINGS = frozenset({
+    "алло", "алё", "да", "слушаю", "говорите", "угу", "ага", "hello", "yes",
+})
 
 
 @dataclass
@@ -73,12 +77,21 @@ def _technical_no_answer_signals(status: str) -> CallResultSignals:
 def _hangup_without_answers_signals() -> CallResultSignals:
     return CallResultSignals(
         hangup_without_result=True,
-        replacement_contact_required=True,
         summary="Бросили трубку без ответов",
         confidence=0.95,
         signal_reasons={
             "hangup_without_result": "Interrupted без содержания",
-            "replacement_contact_required": "Перезвон на другой номер",
+        },
+    )
+
+
+def _hangup_during_robocall_signals() -> CallResultSignals:
+    return CallResultSignals(
+        hangup_during_robocall=True,
+        summary="дозвон был, человек бросил трубку",
+        confidence=0.95,
+        signal_reasons={
+            "hangup_during_robocall": "Interrupted с содержанием, без бизнес-результата",
         },
     )
 
@@ -89,6 +102,62 @@ def _is_technical_unsupported(technical: str, call_result: str) -> bool:
         or technical in TECHNICAL_UNSUPPORTED
         or call_result in TECHNICAL_UNSUPPORTED
     )
+
+
+def _event_text(ev: dict[str, Any]) -> str:
+    parts = [str(ev.get("match") or ""), str(ev.get("transcription") or "")]
+    return " ".join(p for p in parts if p).strip()
+
+
+def _is_script_template_text(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    lower = stripped.lower()
+    if "..." in stripped or "/" in stripped:
+        return True
+    return lower.startswith("поговорите с")
+
+
+def _is_short_greeting_text(text: str) -> bool:
+    normalized = re.sub(r"[^\w\s]", "", text.lower()).strip()
+    if not normalized:
+        return False
+    words = normalized.split()
+    if len(words) > 2:
+        return False
+    return normalized in SHORT_ROBOCALL_GREETINGS or (len(words) == 1 and words[0] in SHORT_ROBOCALL_GREETINGS)
+
+
+def _is_short_robocall_greeting(row: dict[str, Any]) -> bool:
+    """True when Interrupted row has only a brief human pickup (e.g. «Алло») in «Вход»."""
+    events = row.get("scenario_events")
+    if not isinstance(events, list):
+        return False
+
+    populated = [
+        ev for ev in events
+        if isinstance(ev, dict)
+        and (
+            (ev.get("match") and str(ev.get("match")).strip())
+            or (ev.get("transcription") and str(ev.get("transcription")).strip())
+        )
+    ]
+    if len(populated) != 1:
+        return False
+
+    ev = populated[0]
+    field = (ev.get("field") or "").strip().lower()
+    if field != ENTRY_FIELD and not field.startswith(ENTRY_FIELD):
+        return False
+
+    match = str(ev.get("match") or "").strip()
+    transcription = str(ev.get("transcription") or "").strip()
+    for text in (match, transcription):
+        if _is_script_template_text(text):
+            return False
+
+    return any(_is_short_greeting_text(text) for text in (match, transcription) if text)
 
 
 class DeterministicPreClassifier:
@@ -127,6 +196,22 @@ class DeterministicPreClassifier:
 
         if has_content:
             if call_result in TECHNICAL_AMBIGUOUS or technical in TECHNICAL_AMBIGUOUS:
+                from app.services.call_results.scenario_signal_extractor import (
+                    extract_signals_from_scenario_events,
+                )
+                scenario_signals = extract_signals_from_scenario_events(row)
+                if scenario_signals is None:
+                    if _is_short_robocall_greeting(row):
+                        return PreClassResult(
+                            category="robot_callback",
+                            reason="Interrupted с содержанием — бросил без разговора",
+                            det_signals=_hangup_during_robocall_signals(),
+                        )
+                    return PreClassResult(
+                        category="robot_callback",
+                        reason="Interrupted без диалога — бросили трубку",
+                        det_signals=_hangup_without_answers_signals(),
+                    )
                 return PreClassResult(
                     category=None,
                     reason="Interrupted с содержательными данными — LLM",

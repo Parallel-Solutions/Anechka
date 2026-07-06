@@ -221,6 +221,8 @@ class SignalMerger:
             return "Одновременно отказ и просьба перезвонить"
         if sig.hangup_without_result and sig.active_signal_count() > 1:
             return "Hangup вместе с другими сигналами"
+        if sig.hangup_during_robocall and sig.active_signal_count() > 1:
+            return "Бросил без разговора вместе с другими сигналами"
         ac = sig.alternate_contact
         if sig.alternate_contact_requested and ac.phone and len(str(ac.phone)) < 10:
             return "Неполный номер альтернативного контакта"

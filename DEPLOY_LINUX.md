@@ -11,14 +11,14 @@ flowchart LR
       db[db_Postgres16]
       restore[db-restore]
       migrate[migrate]
-      web[web_port8000]
+      web[web_port80]
       worker[worker]
     end
   end
   db --> restore --> migrate
   migrate --> web
   migrate --> worker
-  browser[Browser] -->|"HTTP :8000"| web
+  browser[Browser] -->|"HTTP :80"| web
   web --> db
   worker --> db
   web --> bitrix[Bitrix24_API]
@@ -49,7 +49,7 @@ bash deploy.sh
 | RAM | 2 GB+ (рекомендуется 4 GB) |
 | Диск | 5 GB+ свободно (seed-дамп ~1.3 GB + рост БД и exports) |
 | Сеть | Исходящий доступ к Bitrix24 REST API; опционально OpenAI API |
-| Порт | **8000** (HTTP) открыт в firewall, если доступ снаружи |
+| Порт | **80** (HTTP) открыт в firewall, если доступ снаружи |
 
 ---
 
@@ -105,8 +105,8 @@ nano .env   # или vim
 |------------|------------|
 | `APP_SECRET_KEY` | Секрет приложения (случайная строка) |
 | `POSTGRES_PASSWORD` | Пароль PostgreSQL |
-| `BASIC_AUTH_PASSWORD` | Пароль HTTP Basic Auth для входа в UI |
-| `BOOTSTRAP_ADMIN_PASSWORD` | Пароль bootstrap-админа |
+| `BOOTSTRAP_ADMIN_EMAIL` | Email первого пользователя (создаётся при старте) |
+| `BOOTSTRAP_ADMIN_PASSWORD` | Пароль первого пользователя |
 
 **Рекомендуется задать сразу** (или позже через UI → Настройки):
 
@@ -121,7 +121,7 @@ nano .env   # или vim
 
 ```bash
 openssl rand -hex 32   # для APP_SECRET_KEY
-openssl rand -hex 16   # для POSTGRES_PASSWORD и BASIC_AUTH_PASSWORD
+openssl rand -hex 16   # для POSTGRES_PASSWORD и BOOTSTRAP_ADMIN_PASSWORD
 ```
 
 ---
@@ -164,7 +164,7 @@ docker compose up --build -d
 
 ```bash
 # Health (без авторизации)
-curl http://localhost:8000/health
+curl http://localhost/health
 # Ожидается: {"status":"ok"}
 
 # Результат seed-restore
@@ -186,13 +186,14 @@ docker compose logs db-restore migrate
 docker compose down -v
 docker compose up --build -d
 docker compose logs db-restore   # ожидается RESULT=restored
-curl http://localhost:8000/health
+curl http://localhost/health
 ```
 
 В логах `web` при старте должна быть строка вида `Startup DB check: db=... crm_entities=N` — по ней видно, что БД подключена и есть данные.
 
-Откройте в браузере: `http://<IP_сервера>:8000`  
-Логин/пароль: `BASIC_AUTH_USERNAME` / `BASIC_AUTH_PASSWORD` из `.env`.
+Откройте в браузере: `http://<IP_сервера>` — откроется страница входа.  
+Логин/пароль: `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` из `.env`.  
+Дополнительных пользователей можно добавить в **Настройки → Пользователи**.
 
 ---
 
@@ -202,7 +203,7 @@ curl http://localhost:8000/health
 2. **CRM Import** (`/bitrix-import`) — запустите импорт, если seed-данных недостаточно или нужны свежие данные.
 3. **Call Results** (`/call-results`) — при необходимости; execute в Bitrix по умолчанию **выключен** (`CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false`).
 
-API-документация: `http://<IP>:8000/docs`
+API-документация: `http://<IP>/docs`
 
 ---
 
@@ -210,7 +211,7 @@ API-документация: `http://<IP>:8000/docs`
 
 ```bash
 # ufw (Ubuntu)
-sudo ufw allow 8000/tcp
+sudo ufw allow 80/tcp
 sudo ufw enable
 ```
 
@@ -244,7 +245,7 @@ sudo ufw enable
 | Тесты | `docker compose exec web pytest tests/test_restore_db.py` |
 | Миграции вручную | `docker compose run --rm migrate` |
 
-**Важно:** в prod-режиме исходники **не** монтируются в контейнер — любое изменение кода требует `docker compose up --build -d`. Не запускайте параллельно `uvicorn` на хосте на порту 8000.
+**Важно:** в prod-режиме исходники **не** монтируются в контейнер — любое изменение кода требует `docker compose up --build -d`. Не запускайте параллельно `uvicorn` на хосте на порту 80.
 
 **Seed-дамп и существующая БД:** при обычном `docker compose up` новый `database.sql` из git **не перезапишет** prod-базу — restore пропускается, если `crm_entities` не пуста. Для принудительного re-seed нужен `docker compose down -v`.
 
@@ -259,7 +260,7 @@ sudo ufw enable
 | Пустая база / «База пуста» | Выполнить импорт на `/bitrix-import` или проверить, что `git lfs pull` скачал `database.sql` |
 | «Кракозябры» в UI | `docker compose exec web python scripts/fix_mojibake.py` |
 | Bitrix не подключается | Проверить `BITRIX_WEBHOOK_URL` в настройках |
-| Порт 8000 занят | `ss -tlnp \| grep 8000` — освободить порт или изменить mapping в `docker-compose.yml` |
+| Порт 80 занят | `ss -tlnp \| grep ':80 '` — освободить порт или изменить `WEB_PUBLISH_PORT` в `.env` |
 
 ### 11.1 migrate exit code 3
 

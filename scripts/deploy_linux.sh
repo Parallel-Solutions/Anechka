@@ -10,6 +10,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Prod stack only — ignore COMPOSE_FILE from .env (local dev may set docker-compose.dev.yml)
+COMPOSE=(docker compose -f docker-compose.yml)
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -85,13 +88,13 @@ fi
 
 # 4. Start stack
 echo
-echo "=== docker compose up --build -d ==="
-docker compose up --build -d
+echo "=== docker compose -f docker-compose.yml up --build -d ==="
+"${COMPOSE[@]}" up --build -d
 
 # 5. db-restore verification
 echo
 echo "=== Проверка db-restore ==="
-restore_logs=$(docker compose logs db-restore 2>/dev/null || true)
+restore_logs=$("${COMPOSE[@]}" logs db-restore 2>/dev/null || true)
 if echo "$restore_logs" | grep -q 'RESULT=restored'; then
   info "db-restore: seed дамп накатан (RESULT=restored)"
 elif echo "$restore_logs" | grep -q 'RESULT=skipped'; then
@@ -101,37 +104,45 @@ elif echo "$restore_logs" | grep -q 'restore complete'; then
 elif echo "$restore_logs" | grep -q 'skipping restore\|seed file not found'; then
   info "db-restore: restore пропущен"
 else
-  fail "db-restore: не удалось определить результат. Логи: docker compose logs db-restore"
+  fail "db-restore: не удалось определить результат. Логи: ${COMPOSE[*]} logs db-restore"
 fi
 
 # 6. migrate verification
 echo
 echo "=== Проверка migrate ==="
-migrate_status=$(docker compose ps -a migrate --format '{{.State}}' 2>/dev/null | head -1 || true)
+migrate_status=$("${COMPOSE[@]}" ps -a migrate --format '{{.State}}' 2>/dev/null | head -1 || true)
 if [[ "$migrate_status" != "exited" ]]; then
-  fail "migrate: контейнер не завершился (state=$migrate_status). Логи: docker compose logs migrate"
+  fail "migrate: контейнер не завершился (state=$migrate_status). Логи: ${COMPOSE[*]} logs migrate"
 fi
-migrate_exit=$(docker compose ps -a migrate --format '{{.ExitCode}}' 2>/dev/null | head -1 || true)
+migrate_exit=$("${COMPOSE[@]}" ps -a migrate --format '{{.ExitCode}}' 2>/dev/null | head -1 || true)
 if [[ "$migrate_exit" != "0" ]]; then
   hint=""
   if [[ "$migrate_exit" == "3" ]]; then
     hint=" (Alembic CommandError — см. DEPLOY_LINUX.md §11: Can't locate revision / git pull + rebuild)"
   fi
-  fail "migrate: exit code $migrate_exit.$hint Логи: docker compose logs migrate"
+  fail "migrate: exit code $migrate_exit.$hint Логи: ${COMPOSE[*]} logs migrate"
 fi
 info "migrate: alembic upgrade head завершён успешно"
+
+WEB_PORT="${WEB_PUBLISH_PORT:-80}"
+if [[ -f .env ]]; then
+  env_port=$(grep -E '^WEB_PUBLISH_PORT=' .env 2>/dev/null | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '[:space:]' || true)
+  if [[ -n "$env_port" ]]; then
+    WEB_PORT="$env_port"
+  fi
+fi
 
 # 7. Health check
 echo
 echo "=== Ожидание /health ==="
 for i in $(seq 1 30); do
-  if curl -sf http://localhost:8000/health >/dev/null 2>&1; then
-    body=$(curl -s http://localhost:8000/health)
+  if curl -sf "http://localhost:${WEB_PORT}/health" >/dev/null 2>&1; then
+    body=$(curl -s "http://localhost:${WEB_PORT}/health")
     info "Health: $body"
     break
   fi
   if [[ "$i" -eq 30 ]]; then
-    fail "Health check не прошёл за 30 попыток. Логи: docker compose logs web"
+    fail "Health check не прошёл за 30 попыток. Логи: ${COMPOSE[*]} logs web"
   fi
   sleep 2
 done
@@ -139,7 +150,7 @@ done
 # 8. DB sanity check
 echo
 echo "=== Проверка данных в БД ==="
-crm_count=$(docker compose exec -T web python -c "
+crm_count=$("${COMPOSE[@]}" exec -T web python -c "
 from sqlalchemy import create_engine, text
 import os
 engine = create_engine(os.environ['DATABASE_URL'])
@@ -153,9 +164,14 @@ else
 fi
 
 echo
-docker compose ps
+"${COMPOSE[@]}" ps
 echo
-info "Приложение: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost'):8000"
+host_ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo 'localhost')
+if [[ "$WEB_PORT" == "80" ]]; then
+  info "Приложение: http://${host_ip}"
+else
+  info "Приложение: http://${host_ip}:${WEB_PORT}"
+fi
 info "Логин: значения BASIC_AUTH_USERNAME / BASIC_AUTH_PASSWORD из .env"
 echo
 warn "Следующий шаг: откройте /settings и укажите BITRIX_WEBHOOK_URL, затем /bitrix-import при необходимости."

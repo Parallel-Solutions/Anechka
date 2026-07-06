@@ -8,14 +8,19 @@ from typing import Any
 from app.config import Settings
 from app.models import CallResultImportRow
 from app.services.call_results.action_planner import PlannedAction
+from app.services.call_results.row_disposition import row_matches_manual_call
 
 
 COMMENT_CATEGORY_LABELS: dict[str, str] = {
     "refusal": "Отказ",
     "positive": "Положительный результат",
     "callback_later": "Запрос перезвона",
+    "alternate_contact": "Просьба перезвонить, дан другой контакт",
     "hangup": "Сброс / нет результата",
+    "hangup_during_robocall": "Бросил без разговора",
 }
+
+HANGUP_DURING_ROBO_SUMMARY = "дозвон был, человек бросил трубку"
 
 
 def comment_category_label(row: CallResultImportRow) -> str:
@@ -29,6 +34,10 @@ def comment_category_label(row: CallResultImportRow) -> str:
         return COMMENT_CATEGORY_LABELS["positive"]
     if sig.get("callback_later_requested"):
         return COMMENT_CATEGORY_LABELS["callback_later"]
+    if sig.get("alternate_contact_requested"):
+        return COMMENT_CATEGORY_LABELS["alternate_contact"]
+    if sig.get("hangup_during_robocall"):
+        return COMMENT_CATEGORY_LABELS["hangup_during_robocall"]
     if sig.get("hangup_without_result"):
         return COMMENT_CATEGORY_LABELS["hangup"]
     return "Результат обзвона"
@@ -59,13 +68,20 @@ class BitrixPayloadBuilder:
         todo_description: str | None = None,
         deadline: datetime | None = None,
         settings: Settings | None = None,
+        context_actions: list | None = None,
     ) -> dict[str, Any]:
         ext = row.extracted_data or {}
         sig = row.business_signals or {}
 
         if action.method == "crm.timeline.comment.add":
             return self._comment_payload(
-                row, bitrix_deal_id, campaign_label, comment_override, ext, sig
+                row,
+                bitrix_deal_id,
+                campaign_label,
+                comment_override,
+                ext,
+                sig,
+                context_actions=context_actions,
             )
         if action.method == "crm.activity.todo.add":
             return self._todo_payload(
@@ -79,6 +95,17 @@ class BitrixPayloadBuilder:
                 sig,
                 settings,
             )
+        if action.method == "tasks.task.add":
+            return self._task_payload(
+                row,
+                bitrix_deal_id,
+                title=todo_title,
+                description=todo_description,
+                deadline=deadline,
+                ext=ext,
+                sig=sig,
+                settings=settings,
+            )
         return action.payload
 
     def _comment_payload(
@@ -89,16 +116,17 @@ class BitrixPayloadBuilder:
         override: str | None,
         ext: dict,
         sig: dict,
+        *,
+        context_actions: list | None = None,
     ) -> dict:
         if override:
             comment = override
         else:
             category = comment_category_label(row)
-            lines = [
-                "Результат автоматического обзвона",
-                "",
-                f"Категория: {category}",
-            ]
+            lines = ["Результат автоматического обзвона"]
+            if row_matches_manual_call(row, context_actions or []):
+                lines.extend(["", "Рекомендуется к ручному обзвону"])
+            lines.extend(["", f"Категория: {category}"])
             if row.called_at:
                 lines.append(f"Дата звонка: {row.called_at.isoformat()}")
             if row.raw_phone:
@@ -113,6 +141,8 @@ class BitrixPayloadBuilder:
             if reason and category == COMMENT_CATEGORY_LABELS["refusal"]:
                 lines.append(f"Причина отказа: {reason}")
             summary = sig.get("summary") or ext.get("summary") or row.comment
+            if sig.get("hangup_during_robocall"):
+                summary = HANGUP_DURING_ROBO_SUMMARY
             if summary:
                 lines.extend(["", "Краткое резюме:", str(summary)])
             if row.call_id:
@@ -170,8 +200,59 @@ class BitrixPayloadBuilder:
             "description": "\n".join(p for p in desc_parts if p),
             "pingOffsets": [0, 15],
         }
-        if responsible_id:
-            payload["responsibleId"] = responsible_id
         if dl:
             payload["deadline"] = dl.isoformat() if hasattr(dl, "isoformat") else str(dl)
         return payload
+
+    def _task_payload(
+        self,
+        row: CallResultImportRow,
+        deal_id: int,
+        *,
+        title: str | None,
+        description: str | None,
+        deadline: datetime | None,
+        ext: dict,
+        sig: dict,
+        settings: Settings | None,
+    ) -> dict:
+        outcome_label = comment_category_label(row)
+        summary = sig.get("summary") or ext.get("summary") or row.comment or ""
+        contact = ext.get("contact_name") or row.normalized_data.get("contact_name")
+        manager_action = summary[:800] if summary else "Обработать положительный результат обзвона"
+
+        desc_parts = [
+            description or "Контекст звонка:",
+            f"Результат звонка: {outcome_label}",
+        ]
+        if contact:
+            desc_parts.append(f"Данные клиента: {contact}")
+        if row.raw_phone:
+            desc_parts.append(f"Телефон: {row.raw_phone}")
+        if row.comment:
+            desc_parts.append(f"Комментарий клиента: {row.comment}")
+        desc_parts.append(f"ID сделки: {deal_id}")
+        if row.called_at:
+            desc_parts.append(f"Дата и время звонка: {row.called_at.isoformat()}")
+        desc_parts.append(f"Что сделать менеджеру: {manager_action}")
+        if summary and summary != manager_action:
+            desc_parts.append(f"Краткое резюме: {summary[:800]}")
+        cb = row.callback_at or sig.get("callback_at")
+        if cb:
+            desc_parts.append(f"Запрошенный перезвон: {cb}")
+        desc_parts.append("Источник: автоматический обзвон «Анечка»")
+        if row.call_id:
+            desc_parts.append(f"Call ID: {row.call_id}")
+
+        dl = deadline or row.callback_at
+        if dl is None and settings is not None:
+            dl = datetime.now(tz=row.called_at.tzinfo if row.called_at else None) + parse_positive_deadline(settings)
+
+        fields: dict[str, Any] = {
+            "TITLE": title or "Обработать положительный результат обзвона",
+            "DESCRIPTION": "\n".join(p for p in desc_parts if p),
+            "UF_CRM_TASK": [f"D_{deal_id}"],
+        }
+        if dl:
+            fields["DEADLINE"] = dl.isoformat() if hasattr(dl, "isoformat") else str(dl)
+        return {"fields": fields}

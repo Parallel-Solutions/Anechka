@@ -476,6 +476,17 @@ class CallResultMatcher:
         except (TypeError, ValueError):
             return None
 
+    def find_contact_id_by_phone(self, raw_phone: str) -> int | None:
+        """Return first CRM contact id matching normalized phone, if any."""
+        if self._phone_index is None:
+            self.build_indexes()
+        norm = normalize_phone(raw_phone)
+        if not norm:
+            return None
+        assert self._phone_index is not None
+        contact_ids = self._phone_index.get(norm, [])
+        return contact_ids[0] if contact_ids else None
+
     def get_deal(self, bitrix_deal_id: int) -> CrmEntity | None:
         assert self._deals_by_id is not None
         return self._deals_by_id.get(bitrix_deal_id)

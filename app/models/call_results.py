@@ -56,6 +56,7 @@ PRIMARY_OUTCOMES = (
     "no_answer",
     "refusal",
     "hangup",
+    "hangup_during_robocall",
     "mixed",
     "manual_review",
     "unsupported_outcome",
@@ -65,6 +66,7 @@ ACTION_TYPES = (
     "crm_todo",
     "task",
     "bitrix_add_todo",
+    "bitrix_add_task",
     "bitrix_add_comment",
     "bitrix_find_contact",
     "bitrix_create_contact",
@@ -131,6 +133,7 @@ def empty_business_signals() -> dict[str, Any]:
         "deal_not_found": False,
         "explicit_refusal": False,
         "hangup_without_result": False,
+        "hangup_during_robocall": False,
         "replacement_contact_required": False,
         "alternate_contact": {
             "name": None,

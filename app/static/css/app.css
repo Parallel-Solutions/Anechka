@@ -21,7 +21,7 @@ body {
 }
 
 .deal-block-end > td {
-    border-bottom: 12px solid #f4f6f9 !important;
+    border-bottom: 40px solid #f4f6f9 !important;
 }
 
 .card {
@@ -481,6 +481,26 @@ body.ie-fullpage .nav-link {
     border: 1px solid #dee2e6;
     border-radius: 0.25rem;
     padding: 0.5rem;
+}
+
+.filter-send-response {
+    font-family: var(--bs-font-monospace);
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    background-color: #f0f7ff;
+    border: 1px solid #b6d4fe;
+    border-radius: 0.25rem;
+    padding: 0.5rem;
+}
+
+.filter-send-status {
+    font-size: 0.6875rem;
+    font-weight: 600;
+}
+
+.filter-send-progress .alert {
+    margin-bottom: 0;
 }
 
 .row-view-section {

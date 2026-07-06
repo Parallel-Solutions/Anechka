@@ -281,6 +281,11 @@ def test_tomoru_deals_preview_calls_service(client):
             note=None,
             matched_total=0,
             truncated=False,
+            lpr_summary=None,
+            lpr_view="all",
+            scanned_total=0,
+            scan_complete=True,
+            has_more=False,
         ),
     ) as mock_list:
         resp = client.get("/api/tomoru/deals?category_id=15&stage_id=C15:NEW")

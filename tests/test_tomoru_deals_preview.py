@@ -11,9 +11,14 @@ from app.models import CrmEntity, ENTITY_COMPANY, ENTITY_DEAL
 from app.models import CrmDictionary, CrmDictionaryEntry
 from app.repositories.contact_repository import ContactRepository
 from app.utils.portal import (
+    absolute_bitrix_link,
+    bitrix_action_external_url,
+    bitrix_activity_url,
     bitrix_company_url,
     bitrix_contact_url,
     bitrix_deal_url,
+    bitrix_task_url,
+    parse_bitrix_external_id,
     portal_id_from_webhook,
 )
 
@@ -54,6 +59,92 @@ def test_bitrix_company_url():
         "https://bitrix24.parresh.ru/crm/company/details/777/"
     )
     assert bitrix_company_url("default", 1) is None
+
+
+def test_bitrix_task_url():
+    assert bitrix_task_url("bitrix24.parresh.ru", 20979, user_id=189) == (
+        "https://bitrix24.parresh.ru/company/personal/user/189/tasks/task/view/20979/"
+    )
+    assert bitrix_task_url("bitrix24.parresh.ru", 20979, user_id=0) is None
+    assert bitrix_task_url("default", 1) is None
+
+
+def test_bitrix_activity_url():
+    assert bitrix_activity_url("bitrix24.parresh.ru", 151933) == (
+        "https://bitrix24.parresh.ru/crm/activity/?ID=151933/"
+    )
+    assert bitrix_activity_url("default", 1) is None
+
+
+def test_parse_bitrix_external_id():
+    assert parse_bitrix_external_id("151933") == 151933
+    assert parse_bitrix_external_id("{'id': 151933}") == 151933
+    assert parse_bitrix_external_id('{"id": 151933}') == 151933
+    assert parse_bitrix_external_id(None) is None
+
+
+def test_bitrix_action_external_url():
+    portal = "bitrix24.parresh.ru"
+    stored = "https://bitrix24.parresh.ru/company/personal/user/464/tasks/task/view/151934/"
+    assert bitrix_action_external_url(
+        portal,
+        "tasks.task.add",
+        "151934",
+        response_payload={"bitrix_task_url": stored},
+    ) == stored
+    assert bitrix_action_external_url(
+        portal,
+        "tasks.task.add",
+        "20979",
+        request_payload={"fields": {"RESPONSIBLE_ID": 189}},
+    ) == bitrix_task_url(portal, 20979, user_id=189)
+    assert bitrix_action_external_url(
+        portal,
+        "crm.activity.todo.add",
+        "{'id': 151933}",
+    ) == bitrix_activity_url(portal, 151933)
+    assert bitrix_action_external_url(
+        portal,
+        "crm.timeline.comment.add",
+        "743292",
+        deal_id=4037,
+    ) == bitrix_deal_url(portal, 4037)
+    assert bitrix_action_external_url(
+        portal,
+        "tasks.task.add",
+        "20979",
+        request_payload={"fields": {}},
+    ) is None
+
+
+def test_absolute_bitrix_link():
+    portal = "bitrix24.parresh.ru"
+    rel = "/company/personal/user/1/tasks/task/view/3835/"
+    assert absolute_bitrix_link(portal, rel) == f"https://{portal}{rel}"
+    assert absolute_bitrix_link(portal, f"https://{portal}{rel}") == f"https://{portal}{rel}"
+
+
+def test_resolve_task_url_prefers_api_link():
+    from app.services.call_results.bitrix_gateway import resolve_task_url_from_record
+
+    portal = "bitrix24.parresh.ru"
+    task_record = {
+        "id": 151934,
+        "responsibleId": 43,
+        "link": "/company/personal/user/43/tasks/task/view/151934/",
+    }
+    url, source = resolve_task_url_from_record(portal, task_record, task_id=151934, responsible_user_id=42)
+    assert source == "api_link"
+    assert url == "https://bitrix24.parresh.ru/company/personal/user/43/tasks/task/view/151934/"
+
+
+def test_task_record_from_get_response_item():
+    from app.services.call_results.bitrix_gateway import task_record_from_get_response
+
+    data = {"result": {"item": {"id": 99, "responsibleId": 5, "crmItemIds": ["D_1001"]}}}
+    record = task_record_from_get_response(data)
+    assert record["id"] == 99
+    assert record["responsibleId"] == 5
 
 
 def test_api_tomoru_deals_includes_company_phone_and_description(client, db_session):

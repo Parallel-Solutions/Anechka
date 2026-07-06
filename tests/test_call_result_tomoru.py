@@ -110,6 +110,86 @@ def test_interrupted_with_data_llm():
     assert pre.llm_required
 
 
+def test_interrupted_hangup_with_vhod_deterministic():
+    """Interrupted + короткий вход без бизнес-сигналов → hangup_during_robocall."""
+    import csv
+    import io
+
+    text = (FIXTURES / "interrupted_hangup_with_vhod.csv").read_text(encoding="utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+    raw_row = next(reader)
+    adapter = TomoruCallResultAdapter()
+    tr = adapter.normalize_row(raw_row, HEADERS)
+    assert tr.normalized["has_meaningful_content"]
+
+    pre = DeterministicPreClassifier().classify(tr.normalized)
+    assert not pre.llm_required
+    assert pre.category == "robot_callback"
+    assert pre.det_signals
+    assert pre.det_signals.hangup_during_robocall
+    assert not pre.det_signals.hangup_without_result
+    assert pre.det_signals.summary == "дозвон был, человек бросил трубку"
+
+    from app.models import CallResultImportRow
+    from app.services.call_results.action_planner import BitrixActionPlanner
+
+    row = CallResultImportRow(
+        id=1, import_id=1, source_row_number=3, raw_data=raw_row, normalized_data=tr.normalized,
+        match_status="matched", llm_status="not_required", llm_required=False,
+        manually_overridden=False, llm_input_truncated=False, is_duplicate=False,
+        needs_manual_review=False, execution_status="pending", matched_deal_id=1001,
+    )
+    actions = BitrixActionPlanner().plan(
+        row,
+        bitrix_deal_id=1001,
+        assigned_by_id=42,
+        signals=pre.det_signals,
+        requires_manual=False,
+    )
+    assert [a.method for a in actions] == []
+
+
+def test_interrupted_department_greeting_is_hangup_without_result():
+    """Interrupted + шаблонный match / приветствие отдела без диалога → hangup_without_result."""
+    import csv
+    import io
+
+    text = (FIXTURES / "interrupted_department_greeting.csv").read_text(encoding="utf-8")
+    reader = csv.DictReader(io.StringIO(text))
+    raw_row = next(reader)
+    adapter = TomoruCallResultAdapter()
+    tr = adapter.normalize_row(raw_row, HEADERS)
+    assert tr.normalized["has_meaningful_content"]
+
+    pre = DeterministicPreClassifier().classify(tr.normalized)
+    assert not pre.llm_required
+    assert pre.category == "robot_callback"
+    assert pre.det_signals
+    assert pre.det_signals.hangup_without_result
+    assert not pre.det_signals.replacement_contact_required
+    assert not pre.det_signals.hangup_during_robocall
+
+    from app.models import CallResultImportRow
+    from app.services.call_results.action_planner import BitrixActionPlanner
+    from app.services.call_results.row_disposition import get_row_disposition
+
+    row = CallResultImportRow(
+        id=1, import_id=1, source_row_number=4, raw_data=raw_row, normalized_data=tr.normalized,
+        match_status="matched", llm_status="not_required", llm_required=False,
+        manually_overridden=False, llm_input_truncated=False, is_duplicate=False,
+        needs_manual_review=False, execution_status="pending", matched_deal_id=1001,
+    )
+    actions = BitrixActionPlanner().plan(
+        row,
+        bitrix_deal_id=1001,
+        assigned_by_id=42,
+        signals=pre.det_signals,
+        requires_manual=False,
+    )
+    assert [a.method for a in actions] == ["crm.timeline.comment.add"]
+    assert get_row_disposition(row, actions) == "manual_review"
+
+
 def test_do_not_call_refusal():
     pre = DeterministicPreClassifier().classify({"call_result": "Do Not Call"})
     assert pre.category == "refusal"
@@ -208,7 +288,7 @@ def test_interrupted_empty_deterministic_hangup():
     assert pre.category == "robot_callback"
     assert pre.det_signals
     assert pre.det_signals.hangup_without_result
-    assert pre.det_signals.replacement_contact_required
+    assert not pre.det_signals.replacement_contact_required
     assert not pre.det_signals.no_answer
 
     from app.models import CallResultImportRow
@@ -228,8 +308,7 @@ def test_interrupted_empty_deterministic_hangup():
         requires_manual=False,
     )
     ops = [a.operation_type for a in actions]
-    assert ops == ["contact_search_queue_add", "retry_queue_add"]
-    assert actions[1].payload.get("search_required") is True
+    assert ops == ["bitrix_add_comment"]
 
 
 def test_interrupted_empty_fixture():
@@ -248,6 +327,7 @@ def test_interrupted_empty_fixture():
 
 @pytest.mark.parametrize("name", [
     "no_answer.csv", "interrupted_with_data.csv", "do_not_call.csv", "interrupted_empty.csv",
+    "interrupted_hangup_with_vhod.csv",
     "refusal_vhod.csv", "callback_only.csv",
 ])
 def test_fixture_files_parse(name):
@@ -285,3 +365,137 @@ def test_callback_only_fixture_signals():
     tr = TomoruCallResultAdapter().normalize_row(raw_row, headers)
     sig = extract_signals_from_scenario_events(tr.normalized)
     assert sig and sig.callback_later_requested
+
+
+PORTAL = "example.bitrix24.ru"
+HANGUP_PHONE = "78422272914"
+REPLACEMENT_PHONE = "89169999999"
+
+
+def _seed_hangup_crm(db, *, with_replacement: bool):
+    from app.models import CrmContact, CrmContactLink, CrmContactPhone, CrmEntity, ENTITY_DEAL
+
+    deal_id = 1001
+    source_cid = 5001
+    db.add(
+        CrmEntity(
+            portal_id=PORTAL,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Deal hangup",
+            assigned_by_id=42,
+            raw_payload={"closed": "N"},
+            payload_hash="hash-hangup",
+        )
+    )
+    db.add(
+        CrmContact(
+            portal_id=PORTAL,
+            contact_id=source_cid,
+            full_name="Исходный контакт",
+        )
+    )
+    db.add(
+        CrmContactPhone(
+            portal_id=PORTAL,
+            contact_id=source_cid,
+            value=HANGUP_PHONE,
+            value_type="MOBILE",
+            is_primary=True,
+        )
+    )
+    db.add(
+        CrmContactLink(
+            portal_id=PORTAL,
+            contact_id=source_cid,
+            parent_entity_type_id=ENTITY_DEAL,
+            parent_entity_id=deal_id,
+            is_primary=True,
+        )
+    )
+    if with_replacement:
+        replacement_cid = 6099
+        db.add(
+            CrmContact(
+                portal_id=PORTAL,
+                contact_id=replacement_cid,
+                full_name="Генеральный директор",
+                post="Генеральный директор",
+            )
+        )
+        db.add(
+            CrmContactPhone(
+                portal_id=PORTAL,
+                contact_id=replacement_cid,
+                value=REPLACEMENT_PHONE,
+                value_type="MOBILE",
+                is_primary=True,
+            )
+        )
+        db.add(
+            CrmContactLink(
+                portal_id=PORTAL,
+                contact_id=replacement_cid,
+                parent_entity_type_id=ENTITY_DEAL,
+                parent_entity_id=deal_id,
+                is_primary=False,
+            )
+        )
+    db.commit()
+
+
+def _process_interrupted_empty(db_session):
+    from app.config import get_settings
+    from app.services.call_results.fake_classifier import FakeCallResultClassifier
+    from app.services.call_results.orchestrator import CallResultOrchestrator
+
+    content = (FIXTURES / "interrupted_empty.csv").read_bytes()
+    settings = get_settings()
+    orch = CallResultOrchestrator(
+        db_session,
+        settings,
+        PORTAL,
+        FakeCallResultClassifier([]),
+    )
+    imp, _ = orch.save_uploaded_file(content, "interrupted_empty.csv")
+    db_session.commit()
+    orch.process_import(imp.id)
+    db_session.commit()
+    row = orch.repo.list_rows(imp.id)[0]
+    actions = [a for a in orch.repo.list_actions(imp.id) if a.import_row_id == row.id]
+    return imp, row, actions
+
+
+def test_hangup_without_answer_gets_comment(db_session):
+    from app.services.call_results.row_disposition import get_row_disposition
+    from app.services.call_results.row_filter import get_row_filter
+
+    _seed_hangup_crm(db_session, with_replacement=True)
+    _, row, actions = _process_interrupted_empty(db_session)
+
+    assert (row.business_signals or {}).get("hangup_without_result")
+    assert row.needs_manual_review is False
+    assert row.execution_status == "prepared"
+    assert get_row_disposition(row, actions) == "manual_review"
+    assert get_row_filter(row, actions) == "new_comments"
+
+    methods = [a.method for a in actions if a.is_enabled]
+    assert methods == ["crm.timeline.comment.add"]
+    assert "contact_search.add" not in methods
+    assert "retry_queue.add" not in methods
+
+
+def test_hangup_without_answer_comment_without_replacement_contact(db_session):
+    from app.services.call_results.row_disposition import get_row_disposition
+    from app.services.call_results.row_filter import get_row_filter
+
+    _seed_hangup_crm(db_session, with_replacement=False)
+    _, row, actions = _process_interrupted_empty(db_session)
+
+    assert (row.business_signals or {}).get("hangup_without_result")
+    assert row.needs_manual_review is False
+    assert row.execution_status == "prepared"
+    assert get_row_disposition(row, actions) == "manual_review"
+    assert get_row_filter(row, actions) == "new_comments"
+    assert [a.method for a in actions if a.is_enabled] == ["crm.timeline.comment.add"]
+

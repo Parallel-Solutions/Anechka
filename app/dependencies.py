@@ -34,14 +34,22 @@ def get_auth_service(db: Session = Depends(get_session)) -> AuthService:
 
 
 def get_optional_user(request: Request, auth: AuthService = Depends(get_auth_service)) -> AppUser | None:
+    state_user = getattr(request.state, "user", None)
+    if state_user is not None:
+        return state_user
     token = request.cookies.get(auth.settings.session_cookie_name)
     return auth.load_session(token)
 
 
-def get_current_user(user: AppUser | None = Depends(get_optional_user)) -> AppUser:
-    if user is None:
-        raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "Требуется вход"})
-    return user
+def get_current_user(
+    user: AppUser | None = Depends(get_optional_user),
+    auth: AuthService = Depends(get_auth_service),
+) -> AppUser:
+    if user is not None:
+        return user
+    if auth.settings.app_auth_disabled:
+        return auth.get_default_ie_user()
+    raise HTTPException(status_code=401, detail={"code": "AUTH_REQUIRED", "message": "Требуется вход"})
 
 
 def require_role(minimum: str):

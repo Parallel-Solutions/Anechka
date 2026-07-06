@@ -17,10 +17,12 @@ from app.services.call_results.contact_search_gateway import ContactSearchGatewa
 from app.services.call_results.fake_bitrix_gateway import FakeBitrixGateway
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.retry_queue_gateway import RetryQueueGateway
+from app.services.call_results.task_responsible import resolve_task_responsible_user
+from app.services.security_service import mask_webhook
 
 logger = logging.getLogger(__name__)
 
-FORBIDDEN_METHODS = frozenset({"tasks.task.add", "bitrix_archive_deal", "crm.item.update"})
+FORBIDDEN_METHODS = frozenset({"bitrix_archive_deal", "crm.item.update"})
 
 
 class CrmActionService:
@@ -47,6 +49,7 @@ class CrmActionService:
             self.gateway = FakeBitrixGateway()
 
         self._ctx: dict[str, Any] = {}
+        self._responsible_user_id: int | None = None
 
     def execute_import(
         self,
@@ -54,6 +57,7 @@ class CrmActionService:
         *,
         row_ids: list[int] | None = None,
         retry_failed_only: bool = False,
+        responsible_user_id: int | None = None,
     ) -> dict[str, Any]:
         imp = self.repo.get_import(import_id)
         if imp is None:
@@ -66,6 +70,7 @@ class CrmActionService:
         imp.execute_started_at = utcnow()
         self.db.commit()
 
+        self._responsible_user_id = responsible_user_id
         stats = {"succeeded": 0, "failed": 0, "skipped": 0, "blocked": 0}
         rows = self.repo.list_rows(import_id)
         if row_ids:
@@ -137,7 +142,9 @@ class CrmActionService:
 
             ok = self._execute_action(action, row, imp)
             action.completed_at = utcnow()
-            if ok:
+            if action.execution_status == "skipped":
+                stats["skipped"] += 1
+            elif ok:
                 action.execution_status = "succeeded"
                 stats["succeeded"] += 1
             else:
@@ -157,7 +164,14 @@ class CrmActionService:
         op = action.operation_type or action.action_type
         try:
             if op == "bitrix_add_todo":
-                res = self.gateway.add_deal_todo(action.payload)
+                payload, resp_err = self._inject_todo_responsible(dict(action.payload), row)
+                if payload is None:
+                    action.last_error = resp_err or "Не удалось определить ответственного"
+                    return False
+                action.request_payload = payload
+                res = self.gateway.add_deal_todo(payload)
+            elif op == "bitrix_add_task":
+                return self._execute_add_task(action, row)
             elif op == "bitrix_add_comment":
                 res = self.gateway.add_deal_comment(action.payload)
             elif op == "bitrix_find_contact":
@@ -183,7 +197,11 @@ class CrmActionService:
                 fields = self._contact_fields(action.payload.get("contact") or {}, row)
                 res = self.gateway.update_contact_missing_fields(int(cid), fields)
             elif op == "bitrix_link_contact_to_deal":
-                cid = self._ctx.get("contact_id") or row.matched_contact_id
+                cid = (
+                    action.payload.get("contact_id")
+                    or self._ctx.get("contact_id")
+                    or row.matched_contact_id
+                )
                 deal_id = row.matched_deal_id
                 if not cid or not deal_id:
                     action.last_error = "deal_id or contact_id missing"
@@ -193,14 +211,15 @@ class CrmActionService:
                 reason = action.payload.get("reason", "callback_later")
                 search_required = bool(action.payload.get("search_required"))
                 phone = None if search_required else row.normalized_phone
-                if self._ctx.get("contact_id"):
+                resolved_contact_id = action.payload.get("contact_id") or self._ctx.get("contact_id")
+                if resolved_contact_id:
                     ac = (row.business_signals or {}).get("alternate_contact") or {}
                     phone = ac.get("phone") or phone
                 self.retry_gw.add(
                     import_id=imp.id,
                     row_id=row.id,
                     deal_id=row.matched_deal_id,
-                    contact_id=self._ctx.get("contact_id") or row.matched_contact_id,
+                    contact_id=resolved_contact_id or row.matched_contact_id,
                     phone_normalized=self._norm_phone(str(phone)) if phone else None,
                     callback_at=row.callback_at,
                     callback_text=(row.business_signals or {}).get("callback_text"),
@@ -252,12 +271,163 @@ class CrmActionService:
         val = getattr(self.settings, "bitrix_call_source_field_value", "") or ""
         if code and val:
             fields[code] = val
-        fields["COMMENTS"] = (
+        fields["COMMENTS"] = self._contact_comments(ac, row)
+        return fields
+
+    def _contact_comments(self, ac: dict, row: CallResultImportRow) -> str:
+        sig = row.business_signals or {}
+        ext = row.extracted_data or {}
+        lines = ["Контакт получен в ходе автоматического обзвона Анечкой"]
+        if row.raw_phone:
+            lines.append(f"Исходный телефон: {row.raw_phone}")
+        if ac.get("phone"):
+            lines.append(f"Новый телефон: {ac['phone']}")
+        if ac.get("position"):
+            lines.append(f"Должность: {ac['position']}")
+        if ac.get("extension"):
+            lines.append(f"Добавочный: {ac['extension']}")
+        if row.called_at:
+            lines.append(f"Дата звонка: {row.called_at.isoformat()}")
+        cb = row.callback_at or sig.get("callback_at")
+        if cb:
+            lines.append(f"Запрошенный перезвон: {cb}")
+        summary = sig.get("summary") or ext.get("summary") or row.comment
+        if summary:
+            lines.extend(["", "Краткое резюме:", str(summary)])
+        lines.append("")
+        lines.append(
             f"source=anechka_call; call_id={row.call_id}; import_id={row.import_id}; row_id={row.id}"
         )
-        return fields
+        return "\n".join(lines)
 
     @staticmethod
     def _norm_phone(phone: str) -> str:
         digits = re.sub(r"\D", "", phone)
         return digits[-10:] if len(digits) >= 10 else digits
+
+    def _inject_todo_responsible(
+        self,
+        payload: dict[str, Any],
+        row: CallResultImportRow,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        responsible_id, resp_err = resolve_task_responsible_user(
+            row, self.settings, self.portal_id, self.db,
+            operator_user_id=self._responsible_user_id,
+        )
+        if not responsible_id:
+            return None, resp_err
+        payload["responsibleId"] = responsible_id
+        return payload, None
+
+    def _execute_add_task(self, action: BitrixPreparedAction, row: CallResultImportRow) -> bool:
+        deal_id = row.matched_deal_id
+        log_ctx = {
+            "import_id": action.import_id,
+            "row_id": row.id,
+            "deal_id": deal_id,
+            "call_id": row.call_id,
+            "action_type": action.operation_type or action.action_type,
+            "method": "tasks.task.add",
+        }
+        if not deal_id:
+            action.last_error = "Нет ID сделки — задача не создана"
+            action.response_payload = {
+                "call_id": row.call_id,
+                "deal_id": None,
+                "status": "failed",
+                "error_message": action.last_error,
+            }
+            logger.error("bitrix task skipped: %s error=%s", log_ctx, action.last_error)
+            return False
+
+        if self.repo.has_succeeded_task_for_call(row.call_id):
+            action.execution_status = "skipped"
+            action.last_error = "Задача для этого звонка уже создана"
+            action.response_payload = {"status": "skipped", "call_id": row.call_id}
+            logger.info("bitrix task skipped (dedup): %s", log_ctx)
+            return True
+
+        responsible_id, resp_err = resolve_task_responsible_user(
+            row, self.settings, self.portal_id, self.db,
+            operator_user_id=self._responsible_user_id,
+        )
+        if not responsible_id:
+            action.last_error = resp_err or "Не удалось определить ответственного"
+            action.response_payload = {
+                "call_id": row.call_id,
+                "deal_id": deal_id,
+                "status": "failed",
+                "error_message": action.last_error,
+            }
+            logger.error(
+                "bitrix task failed: %s responsible_user_id=null error=%s",
+                log_ctx,
+                action.last_error,
+            )
+            return False
+
+        payload = dict(action.payload)
+        fields = dict(payload.get("fields") or payload)
+        fields["RESPONSIBLE_ID"] = responsible_id
+        fields["CREATED_BY"] = responsible_id
+        payload = {"fields": fields}
+        action.request_payload = payload
+
+        webhook_masked = mask_webhook(self.settings.bitrix_webhook_url or "")
+        logger.info(
+            "bitrix task create start import_id=%s row_id=%s deal_id=%s "
+            "responsible_user_id=%s action_type=%s method_url=%s/tasks.task.add payload=%s",
+            action.import_id,
+            row.id,
+            deal_id,
+            responsible_id,
+            action.operation_type or action.action_type,
+            webhook_masked,
+            payload,
+        )
+
+        res = self.gateway.create_verified_task(
+            payload,
+            deal_id=int(deal_id),
+            responsible_id=responsible_id,
+            portal_id=self.portal_id,
+        )
+
+        stored = dict(res.response or {})
+        stored["call_id"] = row.call_id
+        stored["deal_id"] = deal_id
+        if stored.get("responsible_user_id") is None:
+            stored["responsible_user_id"] = responsible_id
+        if not res.success:
+            stored["status"] = "failed"
+            stored["error_message"] = res.error
+            action.response_payload = stored
+            action.last_error = res.error
+            if res.external_id:
+                action.external_id = str(res.external_id)
+            logger.error(
+                "bitrix task create failed import_id=%s row_id=%s deal_id=%s "
+                "responsible_user_id=%s error=%s response=%s",
+                action.import_id,
+                row.id,
+                deal_id,
+                responsible_id,
+                res.error,
+                stored,
+            )
+            return False
+
+        action.external_id = str(res.external_id)
+        action.response_payload = stored
+        logger.info(
+            "bitrix task create ok import_id=%s row_id=%s deal_id=%s "
+            "responsible_user_id=%s bitrix_task_id=%s bitrix_task_url=%s response=%s",
+            action.import_id,
+            row.id,
+            deal_id,
+            stored.get("responsible_user_id"),
+            stored.get("bitrix_task_id"),
+            stored.get("bitrix_task_url"),
+            stored,
+        )
+        return True

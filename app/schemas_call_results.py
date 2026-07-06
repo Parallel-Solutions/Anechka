@@ -47,6 +47,7 @@ class RowPatchRequest(BaseModel):
     deal_not_found: bool | None = None
     explicit_refusal: bool | None = None
     hangup_without_result: bool | None = None
+    hangup_during_robocall: bool | None = None
     replacement_contact_required: bool | None = None
     needs_manual_review: bool | None = None
     comment: str | None = None
@@ -67,6 +68,32 @@ class ExecuteRequest(BaseModel):
     row_ids: list[int] | None = None
     confirmation_token: str = ""
     retry_failed_only: bool = False
+
+
+class ExecuteLogItemOut(BaseModel):
+    id: int
+    import_row_id: int
+    source_row_number: int | None = None
+    method: str
+    human_summary: str | None = None
+    execution_status: str
+    external_id: str | None = None
+    bitrix_external_url: str | None = None
+    last_error: str | None = None
+    response_payload: dict[str, Any] | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class ExecuteStatusOut(BaseModel):
+    execute_status: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    prepared: int = 0
+    items: list[ExecuteLogItemOut] | None = None
 
 
 class ManualPreviewRequest(BaseModel):
@@ -136,6 +163,7 @@ class ActionOut(BaseModel):
     deal_title: str | None = None
     bitrix_deal_id: int | None = None
     responsible_name: str | None = None
+    task_responsible_user_id: int | None = None
     final_category: str | None = None
     execution_status: str | None = None
     last_error: str | None = None
@@ -189,8 +217,11 @@ class RowListOut(BaseModel):
         "new_todos",
         "new_comments",
     ] | None = None
+    primary_bucket: Literal["manual_review", "auto_call", "new_comments"] | None = None
     dial_phone: str | None = None
     operator_filter: str | None = None
+    available_manual_actions: list[str] = Field(default_factory=list)
+    manual_review_pending: bool = False
 
 
 class RowOut(RowListOut):
@@ -273,12 +304,18 @@ class ImportSummaryOut(BaseModel):
     pure_no_answer: int = 0
     retry_call_phones: int = 0
     hangup: int = 0
+    hangup_during_robocall: int = 0
     hangup_with_answers: int = 0
     hangup_without_answers: int = 0
     prepared_operations: int = 0
     executed_operations: int = 0
     execution_errors: int = 0
     execute_status: str | None = None
+    primary_manual_review: int = 0
+    primary_auto_call: int = 0
+    primary_new_comments: int = 0
+    filter_counts: dict[str, int] = Field(default_factory=dict)
+    manual_call_inclusive: int = 0
 
 
 class AttemptHistoryOut(BaseModel):

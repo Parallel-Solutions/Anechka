@@ -44,19 +44,31 @@ def is_pure_no_answer_row(row: CallResultImportRow) -> bool:
     )
 
 
+def _hangup_replacement_ready(retry: Any | None) -> bool:
+    if not retry:
+        return False
+    payload = _action_payload(retry)
+    return (
+        payload.get("reason") == "hangup_replacement_contact"
+        and payload.get("search_required") is False
+    )
+
+
 def row_matches_manual_call(
     row: CallResultImportRow,
     actions: list[BitrixPreparedAction | dict[str, Any]],
 ) -> bool:
     sig = row.business_signals or {}
     enabled = _enabled_actions(actions)
-    if any(
+    retry = _get_retry_action(actions)
+    if not _hangup_replacement_ready(retry) and any(
         (a.method if hasattr(a, "method") else a.get("method")) == "contact_search.add"
         for a in enabled
     ):
         return True
-    retry = _get_retry_action(actions)
     if retry and _action_payload(retry).get("reason") == "callback_later":
+        return True
+    if sig.get("hangup_during_robocall"):
         return True
     return bool(sig.get("callback_later_requested"))
 
@@ -102,14 +114,23 @@ def _has_timeline_comment_action(actions: list[BitrixPreparedAction | dict[str, 
     return False
 
 
+CONTACT_SIGNALS = (
+    "callback_later_requested",
+    "explicit_refusal",
+)
+
+
+def had_human_contact(row: CallResultImportRow) -> bool:
+    sig = row.business_signals or {}
+    return any(sig.get(s) for s in CONTACT_SIGNALS)
+
+
 def should_plan_outcome_comment(
     row: CallResultImportRow,
     actions: list[BitrixPreparedAction | dict[str, Any]],
 ) -> bool:
     if not row.matched_deal_id:
         return False
-    if get_row_disposition(row, actions) == "auto_call":
-        return False
     if _has_timeline_comment_action(actions):
         return False
-    return True
+    return had_human_contact(row)

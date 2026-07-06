@@ -7,7 +7,7 @@ from app.services.call_results.llm_schema import CallResultSignals
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 
 
-def test_tasks_forbidden():
+def test_task_payload_missing_fields_invalid():
     v = BitrixPayloadValidator().validate("tasks.task.add", {})
     assert v.status == "invalid"
 

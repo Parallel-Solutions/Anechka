@@ -28,6 +28,17 @@ router = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
 
+@router.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    next_url = request.query_params.get("next") or "/"
+    return templates.TemplateResponse(request, "login.html", {"next_url": next_url})
+
+
+@router.get("/settings/users", response_class=HTMLResponse)
+def settings_users_page(request: Request):
+    return templates.TemplateResponse(request, "settings_users.html", {})
+
+
 def _has_json_download(job: ExportJob | None) -> bool:
     if not job or job.status != "completed" or not job.result_file:
         return False
