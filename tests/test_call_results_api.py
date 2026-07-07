@@ -458,6 +458,51 @@ def test_import_status_live_progress_during_processing(client, db_session):
         assert summary["llm_pending"] == 1
 
 
+def test_reparse_reset_clears_stale_completed_rows(client, db_session, fake_classifier):
+    from app.config import get_settings
+    from app.models.call_results import CallResultImport, CallResultImportRow
+
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        imp = CallResultImport(
+            portal_id=PORTAL,
+            original_filename="x.csv",
+            storage_key="x.csv",
+            file_sha256="h",
+            file_size=10,
+            status="processing",
+            llm_rows_total=2,
+            llm_rows_completed=2,
+        )
+        db_session.add(imp)
+        db_session.flush()
+        db_session.add_all([
+            CallResultImportRow(
+                import_id=imp.id,
+                source_row_number=2,
+                llm_required=True,
+                llm_status="completed",
+            ),
+            CallResultImportRow(
+                import_id=imp.id,
+                source_row_number=3,
+                llm_required=True,
+                llm_status="completed",
+            ),
+        ])
+        db_session.commit()
+
+        settings = get_settings()
+        orch = CallResultOrchestrator(db_session, settings, PORTAL, fake_classifier)
+        orch._reset_import_for_reparse(imp)
+        db_session.commit()
+
+        data = client.get(f"/api/call-results/imports/{imp.id}/status").json()
+        summary = data["summary"]
+        assert summary["total_rows"] == 0
+        assert summary["llm_sent"] == 0
+        assert summary["llm_completed"] == 0
+
+
 def test_row_llm_debug_endpoint(client, db_session, fake_classifier):
     from app.config import get_settings
 

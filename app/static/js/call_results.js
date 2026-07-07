@@ -308,6 +308,21 @@
         barEl.setAttribute('aria-valuemax', '100');
     }
 
+    function showIndeterminateProgress(label) {
+        const container = document.getElementById('import-progress');
+        const labelEl = document.getElementById('import-progress-label');
+        const textEl = document.getElementById('import-progress-text');
+        const barEl = document.getElementById('import-progress-bar');
+        if (!container || !labelEl || !textEl || !barEl) return;
+        container.classList.remove('d-none');
+        labelEl.textContent = label || 'Читаем файл и сопоставляем телефоны…';
+        textEl.textContent = '';
+        barEl.className = 'progress-bar progress-bar-striped progress-bar-animated';
+        barEl.style.width = '100%';
+        barEl.textContent = '';
+        barEl.removeAttribute('aria-valuenow');
+    }
+
     function normalizeLoadOptions(arg) {
         if (typeof arg === 'boolean') {
             return arg ? { pendingProcessing: true } : {};
@@ -587,6 +602,7 @@
                 return;
             }
             resetStallTracking();
+            showIndeterminateProgress('Читаем файл и сопоставляем телефоны…');
             loadImport(importId, { pendingProcessing: true });
         });
         document.getElementById('btn-retry-llm')?.addEventListener('click', async () => {

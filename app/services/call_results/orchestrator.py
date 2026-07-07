@@ -162,6 +162,8 @@ class CallResultOrchestrator:
         imp.planner_version = self.settings.call_result_planner_version
         imp.classifier_version = self.settings.call_result_classifier_version
         imp.adapter_version = ADAPTER_VERSION
+        if not retry_llm_only:
+            self._reset_import_for_reparse(imp)
         self.db.commit()
 
         try:
@@ -221,11 +223,6 @@ class CallResultOrchestrator:
         imp.selected_sheet = sheet.name
         if len(sheet.rows) > self.settings.call_result_max_rows:
             raise ValueError(f"Строк больше лимита {self.settings.call_result_max_rows}")
-
-        self.repo.delete_actions_for_import(imp.id)
-        for old_row in self.repo.list_rows(imp.id):
-            self.db.delete(old_row)
-        self.db.flush()
 
         self.matcher.build_indexes()
         seen_hashes: set[str] = set()
@@ -836,6 +833,25 @@ class CallResultOrchestrator:
         for row in finalize_rows.values():
             self._finalize_row(row, imp)
         self.db.commit()
+
+    def _reset_import_for_reparse(self, imp: CallResultImport) -> None:
+        """Удаляет строки/операции прошлого прогона и обнуляет счётчики,
+        чтобы прогресс нового прогона считался с нуля (нет остаточных 100%)."""
+        self.repo.delete_actions_for_import(imp.id)
+        for old_row in self.repo.list_rows(imp.id):
+            self.db.delete(old_row)
+        self.db.flush()
+        imp.total_rows = 0
+        imp.matched_rows = 0
+        imp.review_rows = 0
+        imp.skipped_rows = 0
+        imp.llm_rows_total = 0
+        imp.llm_rows_completed = 0
+        imp.llm_rows_failed = 0
+        imp.llm_rows_cached = 0
+        imp.llm_rows_skipped = 0
+        imp.llm_rows_low_confidence = 0
+        imp.deterministic_classified = 0
 
     def _update_import_stats(self, imp: CallResultImport) -> None:
         rows = self.repo.list_rows(imp.id)
