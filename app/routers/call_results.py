@@ -526,18 +526,34 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
     )
 
 
-def _build_status(imp) -> ImportStatusOut:
-    return ImportStatusOut(
-        id=imp.id,
-        original_filename=imp.original_filename,
-        status=imp.status,
-        error_message=imp.error_message,
-        source_format=imp.source_format,
-        batch_id=imp.batch_id,
-        exported_at=imp.exported_at,
-        created_at=imp.created_at,
-        processed_at=imp.processed_at,
-        summary=ImportSummaryOut(
+def _live_processing_summary(imp, repo: CallResultRepository) -> ImportSummaryOut:
+    rows = repo.list_rows(imp.id)
+    llm_rows = [r for r in rows if r.llm_required]
+    return ImportSummaryOut(
+        total_rows=len(rows),
+        matched_rows=sum(1 for r in rows if r.match_status == "matched"),
+        review_rows=sum(
+            1 for r in rows
+            if r.match_status in ("ambiguous", "conflict", "not_found") or r.needs_manual_review
+        ),
+        skipped_rows=sum(1 for r in rows if r.skip_reason),
+        deterministic_classified=sum(1 for r in rows if r.classification_source == "deterministic"),
+        llm_sent=len(llm_rows),
+        llm_completed=sum(1 for r in llm_rows if r.llm_status == "completed"),
+        llm_pending=sum(1 for r in llm_rows if r.llm_status == "pending"),
+        llm_failed=sum(1 for r in llm_rows if r.llm_status in ("failed", "invalid")),
+        llm_cached=sum(1 for r in llm_rows if r.llm_provider == "cache"),
+        llm_not_required=sum(1 for r in rows if not r.llm_required or r.llm_status == "not_required"),
+        low_confidence=imp.llm_rows_low_confidence,
+        execute_status=imp.execute_status,
+    )
+
+
+def _build_status(imp, repo: CallResultRepository) -> ImportStatusOut:
+    if imp.status == "processing":
+        summary = _live_processing_summary(imp, repo)
+    else:
+        summary = ImportSummaryOut(
             total_rows=imp.total_rows,
             matched_rows=imp.matched_rows,
             review_rows=imp.review_rows,
@@ -550,7 +566,18 @@ def _build_status(imp) -> ImportStatusOut:
             llm_not_required=imp.llm_rows_skipped,
             low_confidence=imp.llm_rows_low_confidence,
             execute_status=imp.execute_status,
-        ),
+        )
+    return ImportStatusOut(
+        id=imp.id,
+        original_filename=imp.original_filename,
+        status=imp.status,
+        error_message=imp.error_message,
+        source_format=imp.source_format,
+        batch_id=imp.batch_id,
+        exported_at=imp.exported_at,
+        created_at=imp.created_at,
+        processed_at=imp.processed_at,
+        summary=summary,
     )
 
 
@@ -692,7 +719,7 @@ def get_import_status(import_id: int, db: Session = Depends(get_session)):
     imp = repo.get_import(import_id)
     if imp is None:
         raise HTTPException(status_code=404, detail="Import not found")
-    return _build_status(imp)
+    return _build_status(imp, repo)
 
 
 @router.get("/api/call-results/imports/{import_id}")

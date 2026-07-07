@@ -407,6 +407,57 @@ def test_import_status_endpoint(client, db_session, fake_classifier):
         assert "actions_by_method" not in data
 
 
+def test_import_status_live_progress_during_processing(client, db_session):
+    from app.models.call_results import CallResultImport, CallResultImportRow
+
+    with patch("app.services.auth_service.resolve_portal_id", return_value=PORTAL):
+        imp = CallResultImport(
+            portal_id=PORTAL,
+            original_filename="live-progress.csv",
+            storage_key="live-progress.csv",
+            file_sha256="abc123",
+            file_size=100,
+            status="processing",
+            llm_rows_total=0,
+            llm_rows_completed=0,
+        )
+        db_session.add(imp)
+        db_session.flush()
+
+        rows = [
+            CallResultImportRow(
+                import_id=imp.id,
+                source_row_number=2,
+                llm_required=True,
+                llm_status="completed",
+            ),
+            CallResultImportRow(
+                import_id=imp.id,
+                source_row_number=3,
+                llm_required=True,
+                llm_status="pending",
+            ),
+            CallResultImportRow(
+                import_id=imp.id,
+                source_row_number=4,
+                llm_required=False,
+                llm_status="not_required",
+            ),
+        ]
+        db_session.add_all(rows)
+        db_session.commit()
+
+        resp = client.get(f"/api/call-results/imports/{imp.id}/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        summary = data["summary"]
+        assert data["status"] == "processing"
+        assert summary["total_rows"] == 3
+        assert summary["llm_sent"] == 2
+        assert summary["llm_completed"] == 1
+        assert summary["llm_pending"] == 1
+
+
 def test_row_llm_debug_endpoint(client, db_session, fake_classifier):
     from app.config import get_settings
 

@@ -16,6 +16,7 @@
 
     <div class="d-flex gap-2 flex-wrap justify-content-end">
         <button class="btn btn-success btn-sm" id="btn-send-and-export" disabled>Отправить в Битрикс и выгрузить автобзвон</button>
+        <button class="btn btn-outline-info btn-sm d-none" id="btn-retry-llm" disabled>Повторить ИИ</button>
         <button class="btn btn-outline-warning btn-sm" id="btn-restart">Запустить заново</button>
         <button class="btn btn-outline-danger btn-sm" id="btn-delete-import">Удалить импорт</button>
         <a href="/call-results" class="btn btn-outline-secondary btn-sm">К списку</a>
@@ -26,6 +27,18 @@
 
 
 <div id="import-alert"></div>
+
+<div id="import-progress" class="card mb-3 d-none">
+    <div class="card-body py-3">
+        <div class="d-flex justify-content-between mb-2">
+            <span id="import-progress-label">Обработка импорта…</span>
+            <span id="import-progress-text" class="text-muted small"></span>
+        </div>
+        <div class="progress" style="height: 20px;">
+            <div id="import-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 100%"></div>
+        </div>
+    </div>
+</div>
 
 <div id="summary-cards" class="row g-3 mb-3"></div>
 
@@ -108,7 +121,7 @@ window.CALL_RESULT_IMPORT_ID = {{ import_id }};
 
 </script>
 
-<script src="/static/js/call_results.js?v=20250707a"></script>
+<script src="/static/js/call_results.js?v=20250707b"></script>
 
 <script>initCallResultImportPage({{ import_id }});</script>
 

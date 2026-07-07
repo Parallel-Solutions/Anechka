@@ -187,6 +187,67 @@
     let importPollTimer = null;
     let lastStatusSignature = null;
     let currentImportStatus = null;
+    let lastLlmCompletedForStall = null;
+    let stallPollCount = 0;
+    const STALL_POLL_THRESHOLD = 30;
+
+    function resetStallTracking() {
+        lastLlmCompletedForStall = null;
+        stallPollCount = 0;
+    }
+
+    function updateRetryLlmUi(statusData) {
+        const alertEl = document.getElementById('import-alert');
+        const retryBtn = document.getElementById('btn-retry-llm');
+        if (!retryBtn) return;
+
+        const status = statusData.status;
+        const summary = statusData.summary || {};
+        const llmSent = summary.llm_sent ?? 0;
+        const llmCompleted = summary.llm_completed ?? 0;
+        const hasLlmWork = llmSent > llmCompleted;
+        const showRetry = hasLlmWork && (status === 'processing' || status === 'uploaded' || status === 'failed');
+
+        if (!showRetry) {
+            retryBtn.classList.add('d-none');
+            retryBtn.disabled = true;
+            if (status === 'ready') resetStallTracking();
+            return;
+        }
+
+        retryBtn.classList.remove('d-none');
+
+        if (status === 'failed') {
+            retryBtn.disabled = false;
+            if (alertEl) {
+                showAlert(
+                    alertEl,
+                    'Обработка прервана. Нажмите «Повторить ИИ», чтобы продолжить классификацию строк.',
+                    'warning',
+                );
+            }
+            return;
+        }
+
+        if (lastLlmCompletedForStall === llmCompleted) {
+            stallPollCount += 1;
+        } else {
+            stallPollCount = 0;
+            lastLlmCompletedForStall = llmCompleted;
+        }
+
+        const stalled = stallPollCount >= STALL_POLL_THRESHOLD;
+        retryBtn.disabled = !stalled;
+        if (stalled && alertEl) {
+            showAlert(
+                alertEl,
+                'Обработка, похоже, зависла. Нажмите «Повторить ИИ», чтобы продолжить классификацию строк.',
+                'warning',
+            );
+        } else if (alertEl && alertEl.querySelector('.alert-warning')) {
+            alertEl.innerHTML = '';
+        }
+    }
 
     function statusSignature(data) {
         const s = data.summary || {};
@@ -195,12 +256,56 @@
             processed_at: data.processed_at,
             execute_status: s.execute_status,
             total_rows: s.total_rows,
+            llm_sent: s.llm_sent,
             llm_completed: s.llm_completed,
             llm_pending: s.llm_pending,
             prepared_operations: s.prepared_operations,
             executed_operations: s.executed_operations,
             execution_errors: s.execution_errors,
         });
+    }
+
+    function renderImportProgress(statusData) {
+        const container = document.getElementById('import-progress');
+        const labelEl = document.getElementById('import-progress-label');
+        const textEl = document.getElementById('import-progress-text');
+        const barEl = document.getElementById('import-progress-bar');
+        if (!container || !labelEl || !textEl || !barEl) return;
+
+        const status = statusData?.status;
+        const summary = statusData?.summary || {};
+        const processing = status === 'processing' || status === 'uploaded';
+        if (!processing) {
+            container.classList.add('d-none');
+            return;
+        }
+
+        container.classList.remove('d-none');
+        const totalRows = summary.total_rows ?? 0;
+        const llmSent = summary.llm_sent ?? 0;
+        const llmCompleted = summary.llm_completed ?? 0;
+
+        if (totalRows === 0 || llmSent === 0) {
+            labelEl.textContent = 'Читаем файл и сопоставляем телефоны…';
+            textEl.textContent = '';
+            barEl.className = 'progress-bar progress-bar-striped progress-bar-animated';
+            barEl.style.width = '100%';
+            barEl.textContent = '';
+            barEl.removeAttribute('aria-valuenow');
+            barEl.removeAttribute('aria-valuemin');
+            barEl.removeAttribute('aria-valuemax');
+            return;
+        }
+
+        const pct = Math.min(100, Math.round((llmCompleted / llmSent) * 100));
+        labelEl.textContent = 'Классификация ИИ';
+        textEl.textContent = `${llmCompleted} из ${llmSent}`;
+        barEl.className = 'progress-bar';
+        barEl.style.width = `${pct}%`;
+        barEl.textContent = `${pct}%`;
+        barEl.setAttribute('aria-valuenow', String(pct));
+        barEl.setAttribute('aria-valuemin', '0');
+        barEl.setAttribute('aria-valuemax', '100');
     }
 
     function normalizeLoadOptions(arg) {
@@ -233,6 +338,7 @@
                 if (statusData.status === 'processing' || statusData.status === 'uploaded') {
                     applyImportMeta(statusData);
                     importSummaryCache = statusData.summary;
+                    renderImportProgress(statusData);
                     renderSummaryFilters(statusData.summary, activeFilterId);
                     renderFilteredList(activeFilterId, importId, true);
                     updateSendAndExportButton();
@@ -241,6 +347,7 @@
                 }
             }
             scheduleImportPoll(importId, statusData);
+            updateRetryLlmUi(statusData);
         } catch (e) { /* ignore poll errors */ }
     }
 
@@ -479,6 +586,22 @@
                 showAlert(alertEl, data.detail || 'Не удалось запустить парсинг', 'danger');
                 return;
             }
+            resetStallTracking();
+            loadImport(importId, { pendingProcessing: true });
+        });
+        document.getElementById('btn-retry-llm')?.addEventListener('click', async () => {
+            const alertEl = document.getElementById('import-alert');
+            const retryBtn = document.getElementById('btn-retry-llm');
+            if (retryBtn) retryBtn.disabled = true;
+            const resp = await fetch(`/api/call-results/imports/${importId}/retry-llm`, { method: 'POST' });
+            if (!resp.ok) {
+                const data = await resp.json().catch(() => ({}));
+                showAlert(alertEl, data.detail || 'Не удалось запустить повтор ИИ', 'danger');
+                if (retryBtn) retryBtn.disabled = false;
+                return;
+            }
+            resetStallTracking();
+            if (alertEl) alertEl.innerHTML = '';
             loadImport(importId, { pendingProcessing: true });
         });
         const filterSendModalEl = document.getElementById('filter-send-modal');
@@ -507,6 +630,8 @@
         }
         const restartBtn = document.getElementById('btn-restart');
         if (restartBtn) restartBtn.disabled = data.status === 'processing';
+        renderImportProgress(data);
+        updateRetryLlmUi(data);
     }
 
     async function loadImportDetail(importId, { reloadQueues = true } = {}) {
@@ -626,6 +751,7 @@
                 )
             ) {
                 importSummaryCache = statusData.summary;
+                renderImportProgress(statusData);
                 renderSummaryFilters(statusData.summary, activeFilterId);
                 renderFilteredList(activeFilterId, importId, true);
                 updateSendAndExportButton();
@@ -1282,7 +1408,7 @@
                     <span>${escapeHtml(filterDef.label)}</span>
                     <span class="badge bg-secondary">…</span>
                 </div>
-                <div class="card-body text-muted py-4 text-center">Импорт обрабатывается…</div>
+                <div class="card-body text-muted py-4 text-center">Данные появятся после обработки</div>
             </div>`;
             return;
         }
