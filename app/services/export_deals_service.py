@@ -728,6 +728,8 @@ class ExportDealsService:
             params.get("date_from"), params.get("date_to")
         )
         exclude_stage_ids = self._export_archive_stage_ids(category_id)
+        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
+        exclude_closed = not has_stage_filter
         matched_total = repo.count_entities_for_export(
             ENTITY_DEAL,
             category_id=category_id,
@@ -739,6 +741,7 @@ class ExportDealsService:
             date_from=date_from,
             date_to=date_to,
             exclude_stage_ids=exclude_stage_ids or None,
+            exclude_closed=exclude_closed,
         )
         truncated = matched_total > export_limit
         entities = repo.list_entities_for_export(
@@ -753,8 +756,8 @@ class ExportDealsService:
             date_to=date_to,
             limit=export_limit,
             exclude_stage_ids=exclude_stage_ids or None,
+            exclude_closed=exclude_closed,
         )
-        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
         if not has_stage_filter:
             entities = self._exclude_archived_entities(
                 entities,
@@ -806,6 +809,7 @@ class ExportDealsService:
             params.get("date_from"), params.get("date_to")
         )
         exclude_stage_ids = self._export_archive_stage_ids(category_id)
+        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
         export_query = {
             "category_id": category_id,
             "stage_id": params.get("stage_id"),
@@ -816,9 +820,9 @@ class ExportDealsService:
             "date_from": date_from,
             "date_to": date_to,
             "exclude_stage_ids": exclude_stage_ids or None,
+            "exclude_closed": not has_stage_filter,
         }
         matched_total = repo.count_entities_for_export(ENTITY_DEAL, **export_query)
-        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
         lpr_config = load_lpr_config(self.db)
         saved_overrides = load_tomoru_contact_overrides(self.db, self.portal_id)
         lpr_pick_cache = load_all(self.db, self.portal_id)

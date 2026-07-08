@@ -5,9 +5,13 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
 from app.config import Settings, merge_db_settings
 from app.database import SessionLocal
 from app.dependencies import get_call_result_classifier_instance
+from app.models.call_results import CallResultImport, CallResultImportRow
 from app.services.auth_service import resolve_portal_id
 from app.services.call_results.orchestrator import CallResultOrchestrator
 from app.services.settings_service import load_settings_from_db
@@ -29,6 +33,40 @@ class CallResultJobService:
         if cls._executor:
             cls._executor.shutdown(wait=False)
             cls._executor = None
+
+    @classmethod
+    def recover_interrupted_imports(cls, db: Session) -> None:
+        """Resume call-result imports left in processing after a web process restart."""
+        interrupted = db.scalars(
+            select(CallResultImport).where(CallResultImport.status == "processing")
+        ).all()
+        if not interrupted:
+            return
+
+        service = cls()
+        for imp in interrupted:
+            row_count = db.scalar(
+                select(func.count())
+                .select_from(CallResultImportRow)
+                .where(CallResultImportRow.import_id == imp.id)
+            ) or 0
+            if row_count > 0:
+                logger.warning(
+                    "Recovering interrupted call-result import %s (%s rows, retry LLM)",
+                    imp.id,
+                    row_count,
+                )
+                service.submit_process(imp.id, retry_llm_only=True)
+            else:
+                logger.warning(
+                    "Recovering interrupted call-result import %s (no rows, full re-parse)",
+                    imp.id,
+                )
+                service.submit_process(
+                    imp.id,
+                    sheet_name=imp.selected_sheet,
+                    column_mapping=imp.column_mapping,
+                )
 
     def submit_process(
         self,

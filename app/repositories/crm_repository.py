@@ -54,6 +54,18 @@ def _resolve_region_ids(
     return resolved or None
 
 
+def _payload_field_not_closed_y(field_key: str):
+    val = cast(CrmEntity.raw_payload[field_key].as_string(), String)
+    return or_(val.is_(None), func.upper(val) != "Y")
+
+
+def _apply_exclude_closed(q):
+    return q.where(
+        _payload_field_not_closed_y("closed"),
+        _payload_field_not_closed_y("CLOSED"),
+    )
+
+
 def _build_export_entities_query(
     portal_id: str,
     entity_type_id: int,
@@ -68,6 +80,7 @@ def _build_export_entities_query(
     date_to: datetime | None = None,
     is_deleted: bool = False,
     exclude_stage_ids: list[str] | None = None,
+    exclude_closed: bool = False,
     db: Session | None = None,
 ):
     effective_stage_ids = _resolve_stage_ids(stage_id, stage_ids)
@@ -123,6 +136,8 @@ def _build_export_entities_query(
         q = q.where(CrmEntity.created_time <= date_to)
     if exclude_stage_ids:
         q = q.where(CrmEntity.stage_id.notin_(exclude_stage_ids))
+    if exclude_closed:
+        q = _apply_exclude_closed(q)
     return q
 
 
@@ -660,6 +675,7 @@ class CrmRepository:
         date_to: datetime | None = None,
         is_deleted: bool = False,
         exclude_stage_ids: list[str] | None = None,
+        exclude_closed: bool = False,
     ) -> int:
         q = _build_export_entities_query(
             self.portal_id,
@@ -674,6 +690,7 @@ class CrmRepository:
             date_to=date_to,
             is_deleted=is_deleted,
             exclude_stage_ids=exclude_stage_ids,
+            exclude_closed=exclude_closed,
             db=self.db,
         )
         return int(self.db.scalar(select(func.count()).select_from(q.subquery())) or 0)
@@ -694,6 +711,7 @@ class CrmRepository:
         limit: int | None = None,
         is_deleted: bool = False,
         exclude_stage_ids: list[str] | None = None,
+        exclude_closed: bool = False,
     ) -> list[CrmEntity]:
         q = _build_export_entities_query(
             self.portal_id,
@@ -708,6 +726,7 @@ class CrmRepository:
             date_to=date_to,
             is_deleted=is_deleted,
             exclude_stage_ids=exclude_stage_ids,
+            exclude_closed=exclude_closed,
             db=self.db,
         )
         q = q.order_by(CrmEntity.entity_id.asc())

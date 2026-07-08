@@ -85,6 +85,9 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         JobService().recover_interrupted_jobs(db)
+        from app.services.call_results.job_service import CallResultJobService
+
+        CallResultJobService.recover_interrupted_imports(db)
         AiPromptService().ensure_defaults(db)
         from app.services.auth_service import AuthService
 

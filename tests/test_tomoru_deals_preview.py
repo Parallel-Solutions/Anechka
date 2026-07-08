@@ -1393,3 +1393,69 @@ def test_api_tomoru_deals_hides_closed_without_stage_filter(client, db_session, 
     ids = {d["deal_id"] for d in resp.json()["deals"]}
     assert open_id in ids
     assert closed_id not in ids
+
+
+def test_tomoru_deals_pagination_excludes_closed_in_sql(client, db_session, monkeypatch):
+    from app.services.intelligent_export.contact_lpr_classifier import KeywordLprClassifier
+
+    monkeypatch.setattr(
+        "app.services.export_deals_service.build_lpr_classifier",
+        lambda settings, lpr_config, use_llm=True: KeywordLprClassifier(lpr_config),
+    )
+    portal = _portal()
+    region_id = 1007
+    for deal_id in range(20000, 20055):
+        db_session.add(
+            CrmEntity(
+                portal_id=portal,
+                entity_type_id=ENTITY_DEAL,
+                entity_id=deal_id,
+                title=f"Open deal {deal_id}",
+                category_id=15,
+                stage_id="C15:4",
+                payload_hash=f"hp{deal_id}",
+                raw_payload={
+                    "id": deal_id,
+                    "title": f"Open deal {deal_id}",
+                    "closed": "N",
+                    "UF_CRM_5ECE25C5D78E0": str(region_id),
+                },
+            )
+        )
+    for deal_id in range(20055, 20100):
+        db_session.add(
+            CrmEntity(
+                portal_id=portal,
+                entity_type_id=ENTITY_DEAL,
+                entity_id=deal_id,
+                title=f"Closed deal {deal_id}",
+                category_id=15,
+                stage_id="C15:4",
+                payload_hash=f"hc{deal_id}",
+                raw_payload={
+                    "id": deal_id,
+                    "title": f"Closed deal {deal_id}",
+                    "closed": "Y",
+                    "UF_CRM_5ECE25C5D78E0": str(region_id),
+                },
+            )
+        )
+    db_session.commit()
+
+    base = f"/api/tomoru/deals?category_id=15&region_id={region_id}&page_size=50"
+
+    resp_page1 = client.get(base + "&offset=0")
+    assert resp_page1.status_code == 200
+    page1 = resp_page1.json()
+    assert page1["total"] == 55
+    assert page1["matched_total"] == 55
+    assert len(page1["deals"]) == 50
+    assert page1["has_more"] is True
+
+    resp_page2 = client.get(base + "&offset=50")
+    assert resp_page2.status_code == 200
+    page2 = resp_page2.json()
+    assert page2["total"] == 55
+    assert len(page2["deals"]) == 5
+    assert page2["has_more"] is False
+    assert page2["offset"] == 50
