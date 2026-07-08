@@ -553,7 +553,6 @@ def _apply_tomoru_mode(
     dataset["sources"] = [{"alias": deal_alias, "entity_type_id": ENTITY_DEAL}]
     dataset["primary_entity_type_id"] = ENTITY_DEAL
     dataset["relation_refs"] = []
-    _ensure_not_archived_filter(dataset, deal_alias, catalog)
     _ensure_commercial_proposal_filter(dataset, deal_alias, catalog)
     _ensure_region_filter(dataset, deal_alias, catalog, user_message=user_message)
 
@@ -580,7 +579,7 @@ def _apply_tomoru_mode(
         "include_company_phones": True,
         "fetch_company_contacts_live": True,
         "deduplicate_phones": True,
-        "exclude_archived": True,
+        "exclude_archived": False,
         "use_llm_for_lpr": True,
         "category_id": TOMORU_DEFAULT_CATEGORY_ID,
     }

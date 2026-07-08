@@ -205,7 +205,7 @@ class SheetPostProcess(BaseModel):
     include_company_phones: bool = True
     fetch_company_contacts_live: bool = True
     deduplicate_phones: bool = True
-    exclude_archived: bool = True
+    exclude_archived: bool = False
     use_llm_for_lpr: bool = True
     category_id: int = Field(default=15, ge=0)
 

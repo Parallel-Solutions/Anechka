@@ -16,7 +16,6 @@ from app.models.bitrix import ENTITY_COMPANY, ENTITY_DEAL
 from app.repositories.contact_repository import ContactRepository
 from app.repositories.crm_repository import CrmRepository
 from app.services.auth_service import resolve_portal_id
-from app.services.bitrix_client import BitrixClient
 from app.services.export_plan.compiler_v2 import ExportPlanCompilerV2
 from app.services.export_plan.models_v2 import Dataset
 from app.services.export_plan.payload_keys import payload_lookup
@@ -29,7 +28,6 @@ from app.services.intelligent_export.contact_phone_heuristic import (
     _deal_only_contacts,
     collect_deal_contacts,
     collect_deal_contacts_batch,
-    filter_non_archived_deals,
     pick_company_phone,
     pick_contact_for_deal,
 )
@@ -45,10 +43,7 @@ from app.services.lpr_service import LprConfig, load_lpr_config
 from app.services.tomoru_contact_preferences import load_all as load_tomoru_contact_overrides
 from app.services.intelligent_export.plan_service import prepare_plan
 from app.services.intelligent_export.scope import build_scope
-from app.services.intelligent_export.tomoru_stages import (
-    build_stage_names_map,
-    resolve_archive_stage_ids,
-)
+from app.services.intelligent_export.tomoru_stages import build_stage_names_map
 from app.services.json_export_service import extract_deals_from_result
 from app.utils.portal import bitrix_company_url, bitrix_contact_url, bitrix_deal_url
 
@@ -457,39 +452,6 @@ class ExportDealsService:
         self.settings = settings
         self.portal_id = resolve_portal_id(settings)
 
-    def _exclude_archived_entities(
-        self,
-        entities: list[CrmEntity],
-        *,
-        category_id: int | None,
-    ) -> list[CrmEntity]:
-        if not entities or category_id is None:
-            return entities
-        client = None
-        if self.settings.bitrix_webhook_url:
-            client = BitrixClient(self.settings)
-        archive_stage_ids = resolve_archive_stage_ids(
-            self.db,
-            self.portal_id,
-            int(category_id),
-            client=client,
-        )
-        return filter_non_archived_deals(entities, archive_stage_ids=archive_stage_ids)
-
-    def _export_archive_stage_ids(self, category_id: int | None) -> list[str]:
-        if category_id is None:
-            return []
-        client = None
-        if self.settings.bitrix_webhook_url:
-            client = BitrixClient(self.settings)
-        archive_stage_ids = resolve_archive_stage_ids(
-            self.db,
-            self.portal_id,
-            int(category_id),
-            client=client,
-        )
-        return list(archive_stage_ids)
-
     def list_deals(
         self,
         job: ExportJob,
@@ -727,9 +689,6 @@ class ExportDealsService:
         date_from, date_to = _date_range_bounds(
             params.get("date_from"), params.get("date_to")
         )
-        exclude_stage_ids = self._export_archive_stage_ids(category_id)
-        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
-        exclude_closed = not has_stage_filter
         matched_total = repo.count_entities_for_export(
             ENTITY_DEAL,
             category_id=category_id,
@@ -740,8 +699,6 @@ class ExportDealsService:
             region_field=region_field,
             date_from=date_from,
             date_to=date_to,
-            exclude_stage_ids=exclude_stage_ids or None,
-            exclude_closed=exclude_closed,
         )
         truncated = matched_total > export_limit
         entities = repo.list_entities_for_export(
@@ -755,14 +712,7 @@ class ExportDealsService:
             date_from=date_from,
             date_to=date_to,
             limit=export_limit,
-            exclude_stage_ids=exclude_stage_ids or None,
-            exclude_closed=exclude_closed,
         )
-        if not has_stage_filter:
-            entities = self._exclude_archived_entities(
-                entities,
-                category_id=category_id,
-            )
         stage_names = build_stage_names_map(
             self.db,
             self.portal_id,
@@ -808,8 +758,6 @@ class ExportDealsService:
         date_from, date_to = _date_range_bounds(
             params.get("date_from"), params.get("date_to")
         )
-        exclude_stage_ids = self._export_archive_stage_ids(category_id)
-        has_stage_filter = bool(params.get("stage_ids") or params.get("stage_id"))
         export_query = {
             "category_id": category_id,
             "stage_id": params.get("stage_id"),
@@ -819,8 +767,6 @@ class ExportDealsService:
             "region_field": region_field,
             "date_from": date_from,
             "date_to": date_to,
-            "exclude_stage_ids": exclude_stage_ids or None,
-            "exclude_closed": not has_stage_filter,
         }
         matched_total = repo.count_entities_for_export(ENTITY_DEAL, **export_query)
         lpr_config = load_lpr_config(self.db)
@@ -847,11 +793,6 @@ class ExportDealsService:
                 offset=offset,
                 limit=limit,
             )
-            if not has_stage_filter:
-                entities = self._exclude_archived_entities(
-                    entities,
-                    category_id=category_id,
-                )
             page = _enrich_tomoru_entities(
                 self.db,
                 self.portal_id,
@@ -905,11 +846,6 @@ class ExportDealsService:
                 scan_complete = True
                 break
             batch = raw_batch
-            if not has_stage_filter:
-                batch = self._exclude_archived_entities(
-                    batch,
-                    category_id=category_id,
-                )
             scanned += len(batch)
             enriched = _enrich_tomoru_entities(
                 self.db,
@@ -978,10 +914,6 @@ class ExportDealsService:
             ENTITY_DEAL,
             category_id=params.get("category_id"),
             limit=export_limit,
-        )
-        entities = self._exclude_archived_entities(
-            entities,
-            category_id=params.get("category_id"),
         )
         category_id = params.get("category_id")
         stage_names = build_stage_names_map(

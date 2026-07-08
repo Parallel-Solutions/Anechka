@@ -26,16 +26,12 @@ from app.services.intelligent_export.contact_lpr_classifier import build_lpr_cla
 from app.services.intelligent_export.contact_phone_heuristic import (
     _deal_company_id,
     collect_deal_contacts,
-    filter_non_archived_deals,
     pick_company_phone,
     pick_phone_for_contact,
     pick_phone_for_deal,
 )
 from app.services.export_plan.models_v2 import SheetPostProcess
-from app.services.intelligent_export.tomoru_stages import (
-    filter_stage_ids_for_category,
-    resolve_archive_stage_ids,
-)
+from app.services.intelligent_export.tomoru_stages import filter_stage_ids_for_category
 from app.services.json_export_service import build_export_payload, write_export_json
 from app.services.lpr_service import LprConfig, contact_to_lpr_dict, detect_lpr
 from app.services.tomoru_contact_preferences import (
@@ -277,13 +273,6 @@ class LprTomoruService:
             if raw_stage_ids
             else None
         )
-        archive_stage_ids = resolve_archive_stage_ids(
-            self.db,
-            self.portal_id,
-            category_id,
-            client=bitrix_client,
-        )
-        exclude_stage_ids = list(archive_stage_ids) if archive_stage_ids else None
         matched_total = crm_repo.count_entities_for_export(
             ENTITY_DEAL,
             category_id=category_id,
@@ -291,7 +280,6 @@ class LprTomoruService:
             region_ids=region_ids or None,
             date_from=date_from,
             date_to=date_to,
-            exclude_stage_ids=exclude_stage_ids,
         )
         self.last_matched_total = matched_total
         self.last_truncated = False
@@ -303,16 +291,7 @@ class LprTomoruService:
             region_ids=region_ids or None,
             date_from=date_from,
             date_to=date_to,
-            exclude_stage_ids=exclude_stage_ids,
         )
-        if not deals:
-            raise ExportValidationError("По указанным фильтрам сделки не найдены в локальной БД")
-        if not stage_ids:
-            before_archive_filter = len(deals)
-            deals = filter_non_archived_deals(deals, archive_stage_ids=archive_stage_ids)
-            skipped_archived = before_archive_filter - len(deals)
-            if skipped_archived:
-                self._log(f"Пропущено архивных сделок: {skipped_archived}")
         if not deals:
             raise ExportValidationError("По указанным фильтрам сделки не найдены в локальной БД")
 

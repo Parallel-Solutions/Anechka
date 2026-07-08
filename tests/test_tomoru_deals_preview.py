@@ -1354,11 +1354,7 @@ def test_api_tomoru_deals_shows_closed_stage_when_explicitly_filtered(client, db
     assert deal_id in {d["deal_id"] for d in data["deals"]}
 
 
-def test_api_tomoru_deals_hides_closed_without_stage_filter(client, db_session, monkeypatch):
-    monkeypatch.setattr(
-        "app.services.export_deals_service.resolve_archive_stage_ids",
-        lambda *args, **kwargs: frozenset({"C15:UC_8W3UAD"}),
-    )
+def test_api_tomoru_deals_shows_closed_without_stage_filter(client, db_session):
     portal = _portal()
     open_id = 12011
     closed_id = 12012
@@ -1392,10 +1388,74 @@ def test_api_tomoru_deals_hides_closed_without_stage_filter(client, db_session, 
     assert resp.status_code == 200
     ids = {d["deal_id"] for d in resp.json()["deals"]}
     assert open_id in ids
-    assert closed_id not in ids
+    assert closed_id in ids
 
 
-def test_tomoru_deals_pagination_excludes_closed_in_sql(client, db_session, monkeypatch):
+def test_api_tomoru_deals_shows_archive_with_region_filter(client, db_session):
+    portal = _portal()
+    _seed_kp_stage_dictionary(
+        db_session,
+        portal,
+        [("C15:UC_8W3UAD", "Архив")],
+    )
+    deal_id = 12020
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Perm archive deal",
+            category_id=15,
+            stage_id="C15:UC_8W3UAD",
+            payload_hash="h12020",
+            raw_payload={
+                "id": deal_id,
+                "title": "Perm archive deal",
+                "closed": "N",
+                "UF_CRM_5ECE25C5D78E0": 1069,
+            },
+        )
+    )
+    db_session.commit()
+
+    resp = client.get(
+        "/api/tomoru/deals?category_id=15&stage_id=C15:UC_8W3UAD&region_id=1069"
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    assert deal_id in {d["deal_id"] for d in data["deals"]}
+
+
+def test_api_tomoru_deals_shows_archive_without_stage_filter(client, db_session):
+    portal = _portal()
+    deal_id = 12021
+    db_session.add(
+        CrmEntity(
+            portal_id=portal,
+            entity_type_id=ENTITY_DEAL,
+            entity_id=deal_id,
+            title="Perm archive deal no stage filter",
+            category_id=15,
+            stage_id="C15:UC_8W3UAD",
+            payload_hash="h12021",
+            raw_payload={
+                "id": deal_id,
+                "title": "Perm archive deal no stage filter",
+                "closed": "N",
+                "UF_CRM_5ECE25C5D78E0": 1069,
+            },
+        )
+    )
+    db_session.commit()
+
+    resp = client.get("/api/tomoru/deals?category_id=15&region_id=1069")
+    assert resp.status_code == 200
+    ids = {d["deal_id"] for d in resp.json()["deals"]}
+    assert deal_id in ids
+
+
+def test_tomoru_deals_pagination_includes_closed_in_sql(client, db_session, monkeypatch):
     from app.services.intelligent_export.contact_lpr_classifier import KeywordLprClassifier
 
     monkeypatch.setattr(
@@ -1447,15 +1507,15 @@ def test_tomoru_deals_pagination_excludes_closed_in_sql(client, db_session, monk
     resp_page1 = client.get(base + "&offset=0")
     assert resp_page1.status_code == 200
     page1 = resp_page1.json()
-    assert page1["total"] == 55
-    assert page1["matched_total"] == 55
+    assert page1["total"] == 100
+    assert page1["matched_total"] == 100
     assert len(page1["deals"]) == 50
     assert page1["has_more"] is True
 
     resp_page2 = client.get(base + "&offset=50")
     assert resp_page2.status_code == 200
     page2 = resp_page2.json()
-    assert page2["total"] == 55
-    assert len(page2["deals"]) == 5
+    assert page2["total"] == 100
+    assert len(page2["deals"]) == 50
     assert page2["has_more"] is False
     assert page2["offset"] == 50

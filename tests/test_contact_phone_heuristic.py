@@ -362,7 +362,7 @@ def test_build_tomoru_skips_archived_and_dedups(db_session):
         db_session,
         PORTAL,
         [{"deal": deal1}, {"deal": deal2}, {"deal": deal3}],
-        post_process=_post_process(),
+        post_process=_post_process(exclude_archived=True),
         lpr_config=_lpr_config(),
         settings=get_settings(),
         classifier=KeywordLprClassifier(_lpr_config()),
@@ -398,7 +398,7 @@ def test_build_tomoru_skips_wrong_category(db_session):
     assert stats.deals_skipped_wrong_category == 1
 
 
-def test_enricher_tomoru_mode_adds_closed_filter():
+def test_enricher_tomoru_mode_does_not_add_closed_filter():
     catalog = FieldCatalog(portal_id=PORTAL)
     catalog.fields[(ENTITY_DEAL, "CLOSED")] = FieldCatalogEntry(
         entity_type_id=ENTITY_DEAL,
@@ -454,12 +454,12 @@ def test_enricher_tomoru_mode_adds_closed_filter():
     sheet = enriched["workbook"]["sheets"][0]
     assert sheet["post_process"]["op"] == "tomoru_phones"
     assert sheet["post_process"]["category_id"] == 15
+    assert sheet["post_process"]["exclude_archived"] is False
     assert enriched["datasets"][0]["relation_refs"] == []
     assert enriched["workbook"]["include_errors_sheet"] is False
     filters = enriched["datasets"][0]["filters"]
-    assert any(
+    assert not any(
         f.get("field", {}).get("field_code") == "CLOSED"
-        and f.get("value") == "N"
         for f in filters
     )
     assert any(
