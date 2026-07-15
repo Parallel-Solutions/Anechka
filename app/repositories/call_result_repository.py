@@ -58,15 +58,15 @@ class CallResultRepository:
             )
         )
 
-    def list_imports(self, limit: int = 20) -> list[CallResultImport]:
-        return list(
-            self.db.scalars(
-                select(CallResultImport)
-                .where(CallResultImport.portal_id == self.portal_id)
-                .order_by(CallResultImport.created_at.desc())
-                .limit(limit)
-            )
+    def list_imports(self, limit: int | None = None) -> list[CallResultImport]:
+        stmt = (
+            select(CallResultImport)
+            .where(CallResultImport.portal_id == self.portal_id)
+            .order_by(CallResultImport.created_at.desc())
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return list(self.db.scalars(stmt))
 
     def find_by_sha256(self, file_sha256: str) -> CallResultImport | None:
         return self.db.scalar(

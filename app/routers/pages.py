@@ -401,7 +401,7 @@ def call_results_page(request: Request, db: Session = Depends(get_db)):
     from app.services.auth_service import resolve_portal_id
 
     portal_id = resolve_portal_id(settings)
-    imports = CallResultRepository(db, portal_id).list_imports(limit=15)
+    imports = CallResultRepository(db, portal_id).list_imports()
     return templates.TemplateResponse(
         request,
         "call_results.html",
