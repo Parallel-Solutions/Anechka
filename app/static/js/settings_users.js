@@ -33,9 +33,16 @@
         return Number.isFinite(value) && value > 0 ? value : null;
     }
 
+    function roleOptions(selectedRole) {
+        const labels = {viewer: 'Наблюдатель', analyst: 'Аналитик', admin: 'Администратор'};
+        return Object.entries(labels).map(([role, label]) =>
+            '<option value="' + role + '"' + (role === selectedRole ? ' selected' : '') + '>' + label + '</option>'
+        ).join('');
+    }
+
     function renderUsers(users) {
         if (!users.length) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-muted p-3">Пользователей пока нет</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-muted p-3">Пользователей пока нет</td></tr>';
             return;
         }
         tbody.innerHTML = users.map((user) => `
@@ -43,6 +50,7 @@
                 <td>${escapeHtml(user.email)}</td>
                 <td>${escapeHtml(user.display_name || user.email)}</td>
                 <td>${user.crm_user_external_id != null ? escapeHtml(user.crm_user_external_id) : '—'}</td>
+                <td><select class="form-select form-select-sm user-role">${roleOptions(user.role || 'viewer')}</select></td>
                 <td>${user.is_active ? '<span class="badge text-bg-success">Активен</span>' : '<span class="badge text-bg-secondary">Заблокирован</span>'}</td>
                 <td class="text-end">
                     <button type="button" class="btn btn-sm btn-outline-secondary btn-reset-password">Сбросить пароль</button>
@@ -78,6 +86,7 @@
                     email: document.getElementById('new-email').value,
                     display_name: document.getElementById('new-display-name').value,
                     password: document.getElementById('new-password').value,
+                    role: document.getElementById('new-role').value,
                     crm_user_external_id: bitrixId,
                 }),
             });
@@ -86,6 +95,23 @@
             await loadUsers();
         } catch (err) {
             showAlert(err.message, 'danger');
+        }
+    });
+
+    tbody.addEventListener('change', async (e) => {
+        if (!e.target.classList.contains('user-role')) return;
+        const row = e.target.closest('tr[data-user-id]');
+        if (!row) return;
+        hideAlert();
+        try {
+            await api('/api/app-users/' + row.dataset.userId, {
+                method: 'PATCH',
+                body: JSON.stringify({role: e.target.value}),
+            });
+            showAlert('Роль обновлена', 'success');
+        } catch (err) {
+            showAlert(err.message, 'danger');
+            await loadUsers();
         }
     });
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import BASE_DIR, get_export_dir, get_llm_provider_label, merge_db_settings
 from app.database import get_db
-from app.dependencies import get_app_settings
+from app.dependencies import get_app_settings, require_role
 from app.exceptions import BitrixAuthenticationError
 from app.logging_config import setup_logging
 from app.schemas import BitrixTestRequest, BitrixTestResponse, ConnectionTestResponse, SettingsResponse, SettingsUpdate
@@ -19,7 +19,7 @@ from app.services.llm_client import make_openai_client
 from app.services.security_service import mask_secret, mask_webhook
 from app.services.settings_service import load_settings_from_db, save_settings_to_db
 
-router = APIRouter(tags=["settings"])
+router = APIRouter(tags=["settings"], dependencies=[Depends(require_role("admin"))])
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
 
 

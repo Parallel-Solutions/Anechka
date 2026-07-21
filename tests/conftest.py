@@ -91,7 +91,7 @@ def auth_client(client, db_session):
     from app.services.auth_service import AuthService
 
     auth = AuthService(get_settings(), db_session)
-    user = auth.create_user("test@example.com", "secret12", display_name="Test User")
+    user = auth.create_user("test@example.com", "secret12", role="admin", display_name="Test User")
     res = client.post("/auth/login", json={"email": user.email, "password": "secret12"})
     assert res.status_code == 200
     return client

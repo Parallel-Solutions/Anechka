@@ -15,7 +15,9 @@
             <a class="nav-link" href="/tomoru-export">Tomoru</a>
             <a class="nav-link" href="/call-results">Результаты прозвона</a>
             <a class="nav-link" href="/instruction">Инструкция</a>
+            {% if request.state.user and request.state.user.role == 'admin' %}
             <a class="nav-link" href="/settings">Настройки</a>
+            {% endif %}
             {% if request.state.user %}
             <span class="nav-link text-white-50 small">{{ request.state.user.display_name or request.state.user.email }}</span>
             <form method="post" action="/auth/logout" class="d-inline ms-2" id="logout-form">

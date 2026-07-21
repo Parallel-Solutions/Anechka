@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_app_settings
+from app.dependencies import get_app_settings, require_role
 from app.models import (
     CrmDictionary,
     CrmDictionaryEntry,
@@ -46,7 +46,11 @@ from app.services.bitrix_import.import_queue_service import (
 )
 from app.utils.portal import portal_id_from_webhook
 
-router = APIRouter(prefix="/admin/bitrix", tags=["admin-bitrix"])
+router = APIRouter(
+    prefix="/admin/bitrix",
+    tags=["admin-bitrix"],
+    dependencies=[Depends(require_role("admin"))],
+)
 
 
 def _portal(db: Session) -> str:

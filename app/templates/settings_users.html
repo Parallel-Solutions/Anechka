@@ -8,7 +8,7 @@
     <div class="card-header fw-semibold">Новый пользователь</div>
     <div class="card-body">
         <form id="create-user-form" class="row g-3">
-            <div class="col-md-3">
+            <div class="col-md-2">
                 <label class="form-label" for="new-email">Email</label>
                 <input type="email" class="form-control" id="new-email" required>
             </div>
@@ -20,11 +20,19 @@
                 <label class="form-label" for="new-bitrix-id">ID в Bitrix</label>
                 <input type="number" class="form-control" id="new-bitrix-id" min="1" step="1">
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
+                <label class="form-label" for="new-role">Роль</label>
+                <select class="form-select" id="new-role">
+                    <option value="viewer">Наблюдатель</option>
+                    <option value="analyst">Аналитик</option>
+                    <option value="admin">Администратор</option>
+                </select>
+            </div>
+            <div class="col-md-2">
                 <label class="form-label" for="new-password">Пароль</label>
                 <input type="password" class="form-control" id="new-password" required minlength="6">
             </div>
-            <div class="col-md-2 d-flex align-items-end">
+            <div class="col-md-1 d-flex align-items-end">
                 <button type="submit" class="btn btn-primary w-100">Создать</button>
             </div>
         </form>
@@ -40,12 +48,13 @@
                     <th>Email</th>
                     <th>Имя</th>
                     <th>ID Bitrix</th>
+                    <th>Роль</th>
                     <th>Статус</th>
                     <th class="text-end">Действия</th>
                 </tr>
                 </thead>
                 <tbody id="users-table-body">
-                <tr><td colspan="5" class="text-muted p-3">Загрузка…</td></tr>
+                <tr><td colspan="6" class="text-muted p-3">Загрузка…</td></tr>
                 </tbody>
             </table>
         </div>
@@ -53,5 +62,5 @@
 </div>
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/settings_users.js?v=20250706b"></script>
+<script src="/static/js/settings_users.js?v=20260721"></script>
 {% endblock %}
