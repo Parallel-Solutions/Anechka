@@ -176,7 +176,7 @@ class CallResultImport(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     parser_version: Mapped[str] = mapped_column(String(16), default="1")
     planner_version: Mapped[str] = mapped_column(String(16), default="2")
-    classifier_version: Mapped[str] = mapped_column(String(16), default="2")
+    classifier_version: Mapped[str] = mapped_column(String(16), default="3")
     duplicate_of_import_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_format: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

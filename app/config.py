@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     call_result_planner_version: str = Field(default="2", alias="CALL_RESULT_PLANNER_VERSION")
     call_result_prompt_version: str = Field(default="1", alias="CALL_RESULT_PROMPT_VERSION")
     call_result_schema_version: str = Field(default="1", alias="CALL_RESULT_SCHEMA_VERSION")
-    call_result_classifier_version: str = Field(default="2", alias="CALL_RESULT_CLASSIFIER_VERSION")
+    call_result_classifier_version: str = Field(default="3", alias="CALL_RESULT_CLASSIFIER_VERSION")
 
     # --- Call results Bitrix execution ---
     call_results_bitrix_execution_enabled: bool = Field(

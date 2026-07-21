@@ -129,6 +129,82 @@ def _is_short_greeting_text(text: str) -> bool:
     return normalized in SHORT_ROBOCALL_GREETINGS or (len(words) == 1 and words[0] in SHORT_ROBOCALL_GREETINGS)
 
 
+def _is_generic_greeting_text(text: str) -> bool:
+    normalized = re.sub(r"[^\w\s]", " ", text.lower())
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return False
+    words = normalized.split()
+    return (
+        len(words) <= 8
+        and "здравствуйте" in words
+        and any(
+            marker in normalized
+            for marker in ("отдел", "приемн", "компан", "организац")
+        )
+    )
+
+
+def _is_substantive_text(text: str, *, check_script_template: bool = True) -> bool:
+    if (
+        (check_script_template and _is_script_template_text(text))
+        or _is_short_greeting_text(text)
+        or _is_generic_greeting_text(text)
+    ):
+        return False
+    normalized = re.sub(r"[^\w\s]", " ", text.lower())
+    words = normalized.split()
+    if any(
+        marker in normalized
+        for marker in (
+            "абонент недоступ",
+            "оставьте сообщение",
+            "после сигнала",
+            "линия занята",
+        )
+    ):
+        return False
+    return len(words) >= 3
+
+
+def has_substantive_dialogue(row: dict[str, Any] | None) -> bool:
+    """Return true when content shows dialogue beyond pickup or a script greeting."""
+    if not row:
+        return False
+
+    events = row.get("scenario_events")
+    non_entry_events = 0
+    if isinstance(events, list):
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            field = str(event.get("field") or "").strip().lower()
+            match = str(event.get("match") or "").strip()
+            transcription = str(event.get("transcription") or "").strip()
+            if (match or transcription) and field != ENTRY_FIELD and not field.startswith(ENTRY_FIELD):
+                non_entry_events += 1
+            if match and _is_substantive_text(match):
+                return True
+            if transcription and _is_substantive_text(
+                transcription,
+                check_script_template=False,
+            ):
+                return True
+        if non_entry_events >= 2:
+            return True
+
+    for key in ("transcript", "comment", "call_summary"):
+        value = row.get(key)
+        if value and _is_substantive_text(
+            str(value),
+            check_script_template=(
+                key == "content_text" or value == row.get("content_text")
+            ),
+        ):
+            return True
+    return False
+
+
 def _is_short_robocall_greeting(row: dict[str, Any]) -> bool:
     """True when Interrupted row has only a brief human pickup (e.g. «Алло») in «Вход»."""
     events = row.get("scenario_events")
@@ -206,6 +282,12 @@ class DeterministicPreClassifier:
                             category="robot_callback",
                             reason="Interrupted с содержанием — бросил без разговора",
                             det_signals=_hangup_during_robocall_signals(),
+                        )
+                    if has_substantive_dialogue(row):
+                        return PreClassResult(
+                            category=None,
+                            reason="Interrupted с содержательным разговором — требуется анализ",
+                            llm_required=True,
                         )
                     return PreClassResult(
                         category="robot_callback",

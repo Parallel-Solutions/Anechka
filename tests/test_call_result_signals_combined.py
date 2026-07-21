@@ -2,11 +2,16 @@
 
 from app.models import CallResultImportRow
 from app.services.call_results.action_planner import BitrixActionPlanner
-from app.services.call_results.deterministic_pre_classifier import DeterministicPreClassifier
+from app.services.call_results.deterministic_pre_classifier import DeterministicPreClassifier, PreClassResult
 from app.services.call_results.fake_classifier import positive_result, callback_later_result
-from app.services.call_results.llm_schema import CallResultSignals, is_pure_no_answer, is_pure_refusal
+from app.services.call_results.llm_schema import (
+    CallResultLLMResult,
+    CallResultSignals,
+    EvidenceItem,
+    is_pure_no_answer,
+    is_pure_refusal,
+)
 from app.services.call_results.signal_merger import SignalMerger
-from app.services.call_results.deterministic_pre_classifier import PreClassResult
 
 
 def test_positive_plus_callback_later():
@@ -23,7 +28,7 @@ def test_positive_plus_callback_later():
     assert "retry_queue_add" in ops
 
 
-def test_refusal_not_in_retry_planner():
+def test_refusal_plans_delayed_retry():
     sig = CallResultSignals(explicit_refusal=True, confidence=0.9)
     row = CallResultImportRow(
         id=1, import_id=1, source_row_number=2, raw_data={}, normalized_data={},
@@ -32,7 +37,8 @@ def test_refusal_not_in_retry_planner():
         needs_manual_review=False, execution_status="pending", matched_deal_id=1,
     )
     actions = BitrixActionPlanner().plan(row, bitrix_deal_id=1, assigned_by_id=1, signals=sig, requires_manual=False)
-    assert all(a.operation_type != "retry_queue_add" for a in actions)
+    retry = next(a for a in actions if a.operation_type == "retry_queue_add")
+    assert retry.payload["reason"] == "refusal_followup"
 
 
 def test_no_answer_not_hangup():
@@ -106,6 +112,54 @@ def test_interrupted_with_positive_text():
     pre = PreClassResult(category=None, reason="Interrupted", llm_required=True)
     merged = SignalMerger().merge(pre, llm, llm_valid=True)
     assert merged.signals.positive
+
+
+def test_substantive_dialogue_suppresses_false_hangup_from_llm():
+    pre = PreClassResult(category=None, reason="Interrupted", llm_required=True)
+    llm = CallResultLLMResult(
+        hangup_without_result=True,
+        summary="Сброс трубки",
+        confidence=0.95,
+    )
+    normalized = {
+        "has_meaningful_content": True,
+        "transcript": "Мы занимаемся проектом, позвоните после согласования бюджета",
+    }
+
+    merged = SignalMerger().merge(pre, llm, normalized_data=normalized)
+
+    assert not merged.signals.hangup_without_result
+    assert merged.signals.needs_manual_review
+    assert merged.primary_outcome == "manual_review"
+
+
+def test_substantive_positive_dialogue_keeps_result_and_drops_hangup():
+    pre = PreClassResult(category=None, reason="Interrupted", llm_required=True)
+    llm = CallResultLLMResult(
+        positive=True,
+        hangup_without_result=True,
+        summary="Есть интерес, связь прервалась",
+        confidence=0.95,
+        evidence=[
+            EvidenceItem(
+                source_field="ТЗ",
+                text="Нужна документация для закупки",
+            )
+        ],
+    )
+    normalized = {
+        "has_meaningful_content": True,
+        "scenario_events": [
+            {"field": "Вопрос 1", "match": "Да, проект уже согласован"},
+        ],
+    }
+
+    merged = SignalMerger().merge(pre, llm, normalized_data=normalized)
+
+    assert merged.signals.positive
+    assert not merged.signals.hangup_without_result
+    assert not merged.requires_manual
+    assert merged.primary_outcome == "positive"
 
 
 def test_conflict_refusal_and_positive():

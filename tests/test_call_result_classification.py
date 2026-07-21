@@ -19,13 +19,34 @@ def test_voicemail_no_answer_signal():
     assert pre.det_signals and pre.det_signals.no_answer
 
 
-def test_interrupted_with_transcript_without_scenario_is_hangup():
-    row = {"technical_result": "Interrupted", "transcript": "Архитектор будет после 15 июля"}
+def test_interrupted_with_substantive_transcript_requires_analysis():
+    row = {
+        "technical_result": "Interrupted",
+        "transcript": "Архитектор будет после 15 июля",
+    }
     pre = DeterministicPreClassifier().classify(row)
-    assert pre.category == "robot_callback"
-    assert not pre.llm_required
-    assert not LlmGate.needs_llm(row, pre, llm_enabled=True)
+    assert pre.category is None
+    assert pre.llm_required
+    assert pre.det_signals is None
+    assert LlmGate.needs_llm(row, pre, llm_enabled=True)
 
+
+def test_interrupted_transcription_with_ellipsis_requires_analysis():
+    row = {
+        "technical_result": "Interrupted",
+        "has_meaningful_content": True,
+        "scenario_events": [
+            {
+                "field": "Вопрос 1",
+                "transcription": "Да, проект есть... Документация нужна для закупки",
+            }
+        ],
+    }
+
+    pre = DeterministicPreClassifier().classify(row)
+
+    assert pre.llm_required
+    assert pre.det_signals is None
 
 def test_duplicate_manual_review():
     pre = DeterministicPreClassifier().classify({}, is_duplicate=True)
