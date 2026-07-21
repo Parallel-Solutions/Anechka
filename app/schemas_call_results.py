@@ -328,6 +328,7 @@ class AttemptHistoryOut(BaseModel):
 class ImportStatusOut(BaseModel):
     id: int
     original_filename: str
+    campaign_name: str | None = None
     status: str
     error_message: str | None = None
     source_format: str | None = None
@@ -341,6 +342,7 @@ class ImportStatusOut(BaseModel):
 class ImportDetailOut(BaseModel):
     id: int
     original_filename: str
+    campaign_name: str | None = None
     status: str
     source_format: str | None = None
     batch_id: str | None = None

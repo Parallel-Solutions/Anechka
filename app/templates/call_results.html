@@ -50,12 +50,15 @@
 <h2 class="h5 mb-3">Импорты</h2>
 <div class="table-responsive">
     <table class="table table-hover align-middle">
-        <thead><tr><th>ID</th><th>Файл</th><th>Статус</th><th>Строк</th><th>Дата</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>Кампания / файл</th><th>Статус</th><th>Строк</th><th>Дата</th><th></th></tr></thead>
         <tbody>
         {% for imp in imports %}
         <tr>
             <td>{{ imp.id }}</td>
-            <td>{{ imp.original_filename }}</td>
+            <td>
+                <div class="fw-semibold">{{ imp.campaign_name or imp.original_filename }}</div>
+                {% if imp.campaign_name %}<div class="small text-muted">{{ imp.original_filename }}</div>{% endif %}
+            </td>
             <td><span class="badge status-{{ imp.status }}">{{ imp.status }}</span></td>
             <td>{{ imp.total_rows }}</td>
             <td>{{ format_dt(imp.created_at) if format_dt else imp.created_at }}</td>

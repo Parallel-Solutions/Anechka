@@ -10,7 +10,7 @@
 
         <h1 class="h3 mb-1">Подготовка данных для Битрикс24</h1>
 
-        <p class="text-muted mb-0"><span id="import-meta">{{ import_rec.original_filename }}</span></p>
+        <p class="text-muted mb-0"><span id="import-meta">{{ (import_rec.campaign_name ~ " — " ~ import_rec.original_filename) if import_rec.campaign_name else import_rec.original_filename }}</span></p>
 
     </div>
 

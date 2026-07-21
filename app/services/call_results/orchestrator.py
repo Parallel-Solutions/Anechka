@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
@@ -46,6 +47,19 @@ from app.services.call_results.phone_normalizer import parse_phone_with_extensio
 from app.services.call_results.row_disposition import should_plan_outcome_comment
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_campaign_name(value: Any) -> str | None:
+    text = " ".join(str(value or "").split())
+    return text[:255] or None
+
+
+def _select_campaign_name(values: list[str]) -> tuple[str | None, bool]:
+    if not values:
+        return None, False
+    counts = Counter(values)
+    selected = max(counts, key=lambda value: (counts[value], -values.index(value)))
+    return selected, len(counts) > 1
 
 
 def _parse_dt(val: Any) -> datetime | None:
@@ -227,6 +241,7 @@ class CallResultOrchestrator:
         self.matcher.build_indexes()
         seen_hashes: set[str] = set()
         row_records: list[CallResultImportRow] = []
+        campaign_names: list[str] = []
 
         batch_id = imp.batch_id
         exported_at_str = imp.exported_at.isoformat() if imp.exported_at else None
@@ -244,6 +259,10 @@ class CallResultOrchestrator:
                 warnings.extend(tr.warnings)
             else:
                 normalized = self.mapper.apply_mapping(raw_row, mapping_result_mapping)
+
+            campaign_name = _normalize_campaign_name(normalized.get("campaign_name"))
+            if campaign_name:
+                campaign_names.append(campaign_name)
 
             phone_parsed = parse_phone_with_extension(str(normalized.get("phone", "") or ""))
             if phone_parsed.multi_status == "multiple":
@@ -337,6 +356,13 @@ class CallResultOrchestrator:
                 skip_reason=pre.reason if pre.skip_bitrix else None,
             )
             row_records.append(row)
+
+        imp.campaign_name, has_campaign_conflict = _select_campaign_name(campaign_names)
+        if has_campaign_conflict:
+            import_warnings.append(
+                "В файле найдено несколько названий кампании; выбрано наиболее частое",
+            )
+        imp.import_warnings = import_warnings or None
 
         self.repo.bulk_insert_rows(row_records)
         self.db.commit()

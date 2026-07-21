@@ -158,6 +158,7 @@ class CallResultImport(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     portal_id: Mapped[str] = mapped_column(String(255), index=True)
     original_filename: Mapped[str] = mapped_column(String(512))
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     storage_key: Mapped[str] = mapped_column(String(1024))
     file_sha256: Mapped[str] = mapped_column(String(64), index=True)
     file_size: Mapped[int] = mapped_column(BigInteger, default=0)

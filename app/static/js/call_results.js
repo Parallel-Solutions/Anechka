@@ -642,7 +642,9 @@
         currentImportStatus = data.status ?? currentImportStatus;
         const meta = document.getElementById('import-meta');
         if (meta && data.original_filename) {
-            meta.textContent = data.original_filename;
+            meta.textContent = data.campaign_name
+                ? data.campaign_name + ' — ' + data.original_filename
+                : data.original_filename;
         }
         const restartBtn = document.getElementById('btn-restart');
         if (restartBtn) restartBtn.disabled = data.status === 'processing';

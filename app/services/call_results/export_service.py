@@ -39,6 +39,7 @@ class CallResultExportService:
             "import": {
                 "id": imp.id,
                 "filename": imp.original_filename,
+                "campaign_name": imp.campaign_name,
                 "source_format": imp.source_format,
                 "batch_id": imp.batch_id,
                 "created_at": imp.created_at.isoformat() if imp.created_at else None,

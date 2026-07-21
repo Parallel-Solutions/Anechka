@@ -500,6 +500,7 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
     return ImportDetailOut(
         id=imp.id,
         original_filename=imp.original_filename,
+        campaign_name=imp.campaign_name,
         status=imp.status,
         source_format=imp.source_format,
         batch_id=imp.batch_id,
@@ -570,6 +571,7 @@ def _build_status(imp, repo: CallResultRepository) -> ImportStatusOut:
     return ImportStatusOut(
         id=imp.id,
         original_filename=imp.original_filename,
+        campaign_name=imp.campaign_name,
         status=imp.status,
         error_message=imp.error_message,
         source_format=imp.source_format,
