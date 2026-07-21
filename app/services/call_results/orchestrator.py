@@ -33,6 +33,7 @@ from app.services.call_results.deal_timezone_resolver import DealTimezoneResolve
 from app.services.call_results.deterministic_pre_classifier import DeterministicPreClassifier, _has_content
 from app.services.call_results.file_parser import CallResultFileParser, sanitize_filename
 from app.services.call_results.format_detector import FormatDetector
+from app.services.call_results.followup_scheduler import schedule_refusal_followup
 from app.services.call_results.llm_gate import LlmGate
 from app.services.call_results.llm_gateway import BaseCallResultClassifier
 from app.services.call_results.llm_input_builder import LlmInputBuilder
@@ -631,6 +632,8 @@ class CallResultOrchestrator:
             if resolved.is_ambiguous:
                 row.needs_manual_review = True
                 row.manual_review_reason = row.manual_review_reason or "Неоднозначная дата перезвона"
+        elif merged.signals.explicit_refusal:
+            row.callback_at = schedule_refusal_followup(row.called_at, tz_res.timezone)
 
         self.repo.delete_actions_for_row(row.id, preserve_user_modified=True)
 
@@ -683,6 +686,10 @@ class CallResultOrchestrator:
             contact_creation_allowed=contact_creation_allowed,
             resolved_alternate_contact_id=resolved_alternate_contact_id,
         )
+
+        for action in planned:
+            if action.operation_type == "retry_queue_add":
+                action.payload.setdefault("timezone", tz_res.timezone)
 
         self._append_outcome_comment_if_needed(row, planned)
 

@@ -229,6 +229,7 @@ class CrmActionService:
                     source_contact_id=row.matched_contact_id,
                     replacement_contact_id=self._ctx.get("contact_id"),
                     search_required=search_required,
+                    timezone=action.payload.get("timezone"),
                 )
                 res = type("R", (), {"success": True, "external_id": None, "response": {}, "error": None})()
             elif op == "contact_search_queue_add":

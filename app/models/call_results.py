@@ -110,6 +110,7 @@ RETRY_QUEUE_REASONS = (
     "callback_later",
     "no_answer",
     "hangup_replacement_contact",
+    "refusal_followup",
 )
 CONTACT_SEARCH_STATUSES = (
     "contact_search_required",
