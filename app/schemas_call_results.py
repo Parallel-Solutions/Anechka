@@ -205,6 +205,8 @@ class RowListOut(BaseModel):
     merge_conflict_reason: str | None = None
     business_signals: dict | None = None
     primary_outcome: str | None = None
+    business_group: str = "other"
+    business_group_label: str = "ИНОЕ"
     needs_manual_review: bool = False
     manual_review_reason: str | None = None
     execution_status: str | None = None
@@ -316,6 +318,7 @@ class ImportSummaryOut(BaseModel):
     primary_new_comments: int = 0
     filter_counts: dict[str, int] = Field(default_factory=dict)
     manual_call_inclusive: int = 0
+    business_group_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class AttemptHistoryOut(BaseModel):

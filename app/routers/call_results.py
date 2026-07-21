@@ -53,6 +53,7 @@ from app.services.call_results.classification_prompt import CallResultClassifica
 from app.services.call_results.llm_input_builder import LlmInputBuilder
 from app.services.call_results.llm_schema import SCHEMA_VERSION, is_pure_no_answer
 from app.services.call_results.call_attempt_aggregator import CallAttemptAggregator
+from app.services.call_results.business_groups import count_business_groups, get_business_group
 from app.services.call_results.export_service import CallResultExportService
 from app.services.call_results.format_detector import FormatDetector
 from app.services.call_results.job_service import CallResultJobService
@@ -198,6 +199,7 @@ def _row_list_out(
         row,
         contact_creation_allowed=contact_creation_allowed,
     )
+    business_group, business_group_label = get_business_group(row)
     manual_review_pending = is_pending_manual_review_row(
         row,
         contact_creation_allowed=contact_creation_allowed,
@@ -238,6 +240,8 @@ def _row_list_out(
         merge_conflict_reason=row.merge_conflict_reason,
         business_signals=row.business_signals,
         primary_outcome=row.primary_outcome,
+        business_group=business_group,
+        business_group_label=business_group_label,
         needs_manual_review=row.needs_manual_review,
         manual_review_reason=row.manual_review_reason,
         execution_status=row.execution_status,
@@ -442,6 +446,8 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         if rf == "manual_call" or ud == "manual_call":
             manual_call_inclusive += 1
 
+    business_group_counts = count_business_groups(rows)
+
     summary = ImportSummaryOut(
         total_rows=imp.total_rows or len(rows),
         unique_phones=unique_phones,
@@ -495,6 +501,7 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         primary_new_comments=primary_counts["new_comments"],
         filter_counts=filter_counts,
         manual_call_inclusive=manual_call_inclusive,
+        business_group_counts=business_group_counts,
     )
 
     return ImportDetailOut(
@@ -546,6 +553,7 @@ def _live_processing_summary(imp, repo: CallResultRepository) -> ImportSummaryOu
         llm_cached=sum(1 for r in llm_rows if r.llm_provider == "cache"),
         llm_not_required=sum(1 for r in rows if not r.llm_required or r.llm_status == "not_required"),
         low_confidence=imp.llm_rows_low_confidence,
+        business_group_counts=count_business_groups(rows),
         execute_status=imp.execute_status,
     )
 
@@ -566,6 +574,7 @@ def _build_status(imp, repo: CallResultRepository) -> ImportStatusOut:
             llm_cached=imp.llm_rows_cached,
             llm_not_required=imp.llm_rows_skipped,
             low_confidence=imp.llm_rows_low_confidence,
+            business_group_counts=count_business_groups(repo.list_rows(imp.id)),
             execute_status=imp.execute_status,
         )
     return ImportStatusOut(

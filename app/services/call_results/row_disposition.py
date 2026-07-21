@@ -6,7 +6,9 @@ from typing import Any, Literal
 
 from app.models.call_results import BitrixPreparedAction, CallResultImportRow
 
-AUTO_RETRY_REASONS = frozenset({"no_answer", "alternate_contact", "hangup_replacement_contact"})
+AUTO_RETRY_REASONS = frozenset(
+    {"no_answer", "alternate_contact", "hangup_replacement_contact", "refusal_followup"}
+)
 
 UiDisposition = Literal["manual_review", "manual_call", "auto_call"]
 

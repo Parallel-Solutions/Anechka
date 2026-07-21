@@ -97,6 +97,18 @@ def test_refusal_matched_is_manual_review_without_call_actions():
     assert get_row_disposition(row, actions) == "manual_review"
 
 
+def test_refusal_followup_is_auto_call():
+    row = _row(
+        primary_outcome="refusal",
+        business_signals={"explicit_refusal": True},
+    )
+    actions = [
+        _action("crm.timeline.comment.add"),
+        _action("retry_queue.add", reason="refusal_followup"),
+    ]
+    assert get_row_disposition(row, actions) == "auto_call"
+
+
 def test_dispositions_are_mutually_exclusive():
     cases = [
         (_row(needs_manual_review=True, business_signals={"callback_later_requested": True}), [

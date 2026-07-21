@@ -34,6 +34,16 @@
         needs_manual_review: 'bg-warning text-dark',
     };
 
+    const BUSINESS_GROUP_BADGE_CLASSES = {
+        conversation_yes: 'bg-success',
+        conversation_no: 'bg-danger',
+        callback_same: 'bg-primary',
+        callback_other: 'bg-info text-dark',
+        conversation_unclear: 'bg-warning text-dark',
+        no_answer: 'bg-secondary',
+        other: 'bg-dark',
+    };
+
     const HANGUP_REPLACEMENT_SIGNAL_KEYS = ['hangup_without_result', 'replacement_contact_required'];
     const HANGUP_REPLACEMENT_BADGE = {
         label: 'Сброс трубки',
@@ -1453,12 +1463,13 @@
             <div class="table-responsive">
                 <table class="table table-sm table-hover mb-0 filtered-list-table">
                     <thead><tr>
-                        <th>Строка</th><th>Телефон</th><th>Сделка</th><th>Сигналы</th><th></th>
+                        <th>Строка</th><th>Телефон</th><th>Сделка</th><th>Бизнес-группа</th><th>Сигналы</th><th></th>
                     </tr></thead>
                     <tbody>${rows.map((r) => `<tr data-row-id="${r.id}"${r.id === currentViewRowId ? ' class="table-active"' : ''}>
                         <td>${r.source_row_number}</td>
                         <td>${renderPhoneLink(r.raw_phone)}</td>
                         <td class="text-truncate" style="max-width:180px" title="${escapeHtml(getDealTitle(r))}">${renderDealCell(r)}</td>
+                        <td>${businessGroupBadge(r)}</td>
                         <td>${signalBadges(r.business_signals, r)}</td>
                         <td><button type="button" class="btn btn-sm btn-primary btn-view-row" data-row-id="${r.id}">Просмотреть</button></td>
                     </tr>`).join('')}</tbody>
@@ -1526,6 +1537,7 @@
                 <dt class="col-sm-4">Телефон</dt><dd class="col-sm-8">${renderPhoneLink(row.raw_phone)}</dd>
                 <dt class="col-sm-4">Время звонка</dt><dd class="col-sm-8">${escapeHtml(formatCalledAt(row.called_at))}</dd>
                 <dt class="col-sm-4">Сделка</dt><dd class="col-sm-8">${renderDealCell(row)}</dd>
+                <dt class="col-sm-4">Бизнес-группа</dt><dd class="col-sm-8">${businessGroupBadge(row)}</dd>
                 ${row.manual_review_reason ? `<dt class="col-sm-4">Причина проверки</dt><dd class="col-sm-8 text-warning">${escapeHtml(row.manual_review_reason)}</dd>` : ''}
                 ${extraRowsHtml}
             </dl>
@@ -2038,6 +2050,13 @@
         } else {
             rowViewModal?.show();
         }
+    }
+
+    function businessGroupBadge(row) {
+        const code = row?.business_group || 'other';
+        const label = row?.business_group_label || 'ИНОЕ';
+        const cls = BUSINESS_GROUP_BADGE_CLASSES[code] || 'bg-dark';
+        return '<span class="badge ' + cls + ' text-wrap text-start">' + escapeHtml(label) + '</span>';
     }
 
     function signalBadges(signals, row) {

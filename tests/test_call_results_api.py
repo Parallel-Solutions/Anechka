@@ -110,6 +110,8 @@ def test_upload_and_process_csv(client, db_session, fake_classifier, monkeypatch
                 detail = client.get(f"/api/call-results/imports/{import_id}").json()
                 assert detail["status"] == "ready"
                 assert detail["summary"]["total_rows"] >= 6
+                assert len(detail["summary"]["business_group_counts"]) == 7
+                assert all(row["business_group_label"] for row in detail["rows"])
 
                 methods = detail["actions_by_method"]
                 assert "crm.timeline.comment.add" in methods or detail["summary"]["comments"] >= 0
@@ -162,6 +164,8 @@ def test_export_json(client, db_session, fake_classifier):
         data = resp.json()
         assert "import" in data
         assert "operations" in data
+        assert len(data["summary"]["business_groups"]) == 7
+        assert all("business_group" in operation for operation in data["operations"])
 
 
 def test_export_csv(client, db_session, fake_classifier):
@@ -178,6 +182,9 @@ def test_export_csv(client, db_session, fake_classifier):
         resp = client.get(f"/api/call-results/imports/{imp.id}/export.csv")
         assert resp.status_code == 200
         assert resp.content[:3] == b"\xef\xbb\xbf"
+        header = resp.content.decode("utf-8-sig").splitlines()[0]
+        assert "business_group" in header
+        assert "business_group_label" in header
 
 
 def test_export_retry_call_csv_not_found_deal(client, db_session, fake_classifier):
