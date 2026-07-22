@@ -92,6 +92,8 @@ class TomoruExportRequest(BaseModel):
     date_from: date | None = None
     date_to: date | None = None
     contact_overrides: dict[int, list[int]] = Field(default_factory=dict)
+    group_by_timezone: bool = False
+    local_call_time: str = Field(default="10:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
     @field_validator("contact_overrides", mode="before")
     @classmethod
