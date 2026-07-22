@@ -47,6 +47,7 @@ from app.services.security_service import validate_download_path
 
 router = APIRouter(tags=["exports"])
 job_service = JobService()
+EXTERNAL_PHONE_PREVIEW_LIMIT = 100
 
 
 def _job_to_response(job: ExportJob) -> ExportJobResponse:
@@ -132,6 +133,34 @@ def create_tomoru_export(body: TomoruExportRequest, db: Session = Depends(get_db
     job = job_service.create_job(db, "region_lpr", params)
     return MessageResponse(message="Задача создана", job_id=job.id)
 
+
+@router.post("/exports/tomoru/external/preview")
+async def preview_external_tomoru_export(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    filename = file.filename or "phones.csv"
+    extension = Path(filename).suffix.lower()
+    if extension not in {".csv", ".xlsx"}:
+        raise HTTPException(status_code=400, detail="Поддерживаются только CSV и XLSX")
+    content = await file.read(settings.call_result_max_file_bytes + 1)
+    if len(content) > settings.call_result_max_file_bytes:
+        raise HTTPException(status_code=413, detail="Файл превышает допустимый размер")
+    try:
+        result = extract_external_phones(content, filename)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    preview = result.phones[:EXTERNAL_PHONE_PREVIEW_LIMIT]
+    return {
+        "filename": filename,
+        "rows_total": result.rows_total,
+        "rows_with_phone": result.rows_with_phone,
+        "invalid_rows": result.invalid_rows,
+        "phones_total": len(result.phones),
+        "phones": preview,
+        "preview_truncated": len(preview) < len(result.phones),
+    }
 
 @router.post("/exports/tomoru/external/download")
 async def download_external_tomoru_export(

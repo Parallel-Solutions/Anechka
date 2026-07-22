@@ -17,7 +17,10 @@ from app.services.call_results.contact_search_gateway import ContactSearchGatewa
 from app.services.call_results.fake_bitrix_gateway import FakeBitrixGateway
 from app.services.call_results.payload_validator import BitrixPayloadValidator
 from app.services.call_results.retry_queue_gateway import RetryQueueGateway
-from app.services.call_results.task_responsible import resolve_task_responsible_user
+from app.services.call_results.task_responsible import (
+    resolve_task_creator_user,
+    resolve_task_responsible_user,
+)
 from app.services.security_service import mask_webhook
 
 logger = logging.getLogger(__name__)
@@ -367,21 +370,27 @@ class CrmActionService:
             )
             return False
 
+        creator_id = resolve_task_creator_user(
+            self.settings,
+            operator_user_id=self._responsible_user_id,
+            responsible_user_id=responsible_id,
+        )
         payload = dict(action.payload)
         fields = dict(payload.get("fields") or payload)
         fields["RESPONSIBLE_ID"] = responsible_id
-        fields["CREATED_BY"] = responsible_id
+        fields["CREATED_BY"] = creator_id
         payload = {"fields": fields}
         action.request_payload = payload
 
         webhook_masked = mask_webhook(self.settings.bitrix_webhook_url or "")
         logger.info(
             "bitrix task create start import_id=%s row_id=%s deal_id=%s "
-            "responsible_user_id=%s action_type=%s method_url=%s/tasks.task.add payload=%s",
+            "responsible_user_id=%s creator_user_id=%s action_type=%s method_url=%s/tasks.task.add payload=%s",
             action.import_id,
             row.id,
             deal_id,
             responsible_id,
+            creator_id,
             action.operation_type or action.action_type,
             webhook_masked,
             payload,
@@ -399,6 +408,7 @@ class CrmActionService:
         stored["deal_id"] = deal_id
         if stored.get("responsible_user_id") is None:
             stored["responsible_user_id"] = responsible_id
+        stored["creator_user_id"] = creator_id
         if not res.success:
             stored["status"] = "failed"
             stored["error_message"] = res.error

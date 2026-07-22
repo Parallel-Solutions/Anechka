@@ -117,14 +117,15 @@ def test_execute_positive_task(db_session):
     assert len(gw.comments) == 0
     task_actions = [a for a in svc.repo.list_actions(imp.id) if a.method == "tasks.task.add"]
     assert task_actions[0].execution_status == "succeeded"
-    assert gw.tasks[0]["fields"]["RESPONSIBLE_ID"] == 999
+    assert gw.tasks[0]["fields"]["RESPONSIBLE_ID"] == 42
+    assert gw.tasks[0]["fields"]["CREATED_BY"] == 999
     assert task_actions[0].response_payload.get("bitrix_task_url")
     assert task_actions[0].response_payload.get("bitrix_task_link_source") == "api_link"
-    assert "/user/999/tasks/task/view/1/" in task_actions[0].response_payload.get("bitrix_task_url")
+    assert "/user/42/tasks/task/view/1/" in task_actions[0].response_payload.get("bitrix_task_url")
     assert task_actions[0].response_payload.get("status") == "created"
 
 
-def test_execute_todo_uses_operator_not_deal_assignee(db_session):
+def test_execute_todo_uses_deal_assignee_not_operator(db_session):
     from app.config import get_settings
     from app.models import BitrixPreparedAction
 
@@ -168,10 +169,10 @@ def test_execute_todo_uses_operator_not_deal_assignee(db_session):
     stats = svc.execute_import(imp.id, responsible_user_id=999)
     assert stats["succeeded"] >= 1
     assert len(gw.todos) == 1
-    assert gw.todos[0]["responsibleId"] == 999
+    assert gw.todos[0]["responsibleId"] == 42
 
 
-def test_execute_todo_responsible_fallback_service_user(db_session):
+def test_execute_todo_uses_deal_assignee_not_service_user(db_session):
     from app.config import get_settings
     from app.models import BitrixPreparedAction
 
@@ -204,7 +205,7 @@ def test_execute_todo_responsible_fallback_service_user(db_session):
     svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
     stats = svc.execute_import(imp.id)
     assert stats["succeeded"] >= 1
-    assert gw.todos[0]["responsibleId"] == 77
+    assert gw.todos[0]["responsibleId"] == 42
 
 
 def test_execute_idempotent_skip_succeeded(db_session):
@@ -281,6 +282,11 @@ def test_execute_task_without_responsible_fails(db_session):
     from app.config import get_settings
 
     imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
+    deal = db_session.query(CrmEntity).filter(
+        CrmEntity.portal_id == PORTAL,
+        CrmEntity.entity_id == row.matched_deal_id,
+    ).one()
+    deal.assigned_by_id = None
     settings.bitrix_service_user_id = 0
     db_session.commit()
     settings.call_results_bitrix_execution_enabled = True
@@ -294,7 +300,7 @@ def test_execute_task_without_responsible_fails(db_session):
     assert len(gw.tasks) == 0
 
 
-def test_execute_task_responsible_fallback_service_user(db_session):
+def test_execute_task_creator_fallback_service_user(db_session):
     from app.config import get_settings
 
     imp, row, settings, _ = _process_csv(db_session, HOT_ROW_CSV)
@@ -304,7 +310,8 @@ def test_execute_task_responsible_fallback_service_user(db_session):
     gw = FakeBitrixGateway()
     svc = CrmActionService(db_session, settings, PORTAL, gateway=gw)
     svc.execute_import(imp.id)
-    assert gw.tasks[0]["fields"]["RESPONSIBLE_ID"] == 77
+    assert gw.tasks[0]["fields"]["RESPONSIBLE_ID"] == 42
+    assert gw.tasks[0]["fields"]["CREATED_BY"] == 77
 
 
 def test_execute_task_fails_without_deal_id(db_session):

@@ -724,11 +724,16 @@
     }
 
     function taskResponsibleUserId(action) {
+        if (action?.task_responsible_user_id != null) return action.task_responsible_user_id;
+        return null;
+    }
+
+    function taskCreatorUserId(action) {
         const operatorId = currentUserBitrixId();
         if (operatorId != null) return operatorId;
-        if (action?.task_responsible_user_id != null) return action.task_responsible_user_id;
         const serviceId = diagnosticsCache?.bitrix_service_user_id;
-        return serviceId > 0 ? serviceId : null;
+        if (serviceId > 0) return serviceId;
+        return taskResponsibleUserId(action);
     }
 
     function applyPreviewResponsibleUser(payload, method, action) {
@@ -737,11 +742,12 @@
             const userId = taskResponsibleUserId(action);
             if (userId != null) copy.responsibleId = userId;
         } else if (method === 'tasks.task.add') {
-            const userId = taskResponsibleUserId(action);
-            if (userId != null) {
+            const responsibleId = taskResponsibleUserId(action);
+            const creatorId = taskCreatorUserId(action);
+            if (responsibleId != null && creatorId != null) {
                 const fields = { ...(copy.fields || copy) };
-                fields.RESPONSIBLE_ID = userId;
-                fields.CREATED_BY = userId;
+                fields.RESPONSIBLE_ID = responsibleId;
+                fields.CREATED_BY = creatorId;
                 copy.fields = fields;
             }
         }
@@ -753,13 +759,15 @@
         const webhookOk = diagnosticsCache?.bitrix_webhook_configured !== false;
         if (!execEnabled || !webhookOk) return false;
         const actions = preparedActions || [];
-        const needsResponsible = actions.some(
+        const taskActions = actions.filter(
             (a) => (a.method === 'crm.activity.todo.add' || a.method === 'tasks.task.add') && a.is_enabled !== false,
         );
-        if (needsResponsible) {
-            return actions.some((a) => taskResponsibleUserId(a) != null);
-        }
-        return true;
+        return taskActions.every((a) => {
+            if (a.method === 'tasks.task.add') {
+                return taskResponsibleUserId(a) != null && taskCreatorUserId(a) != null;
+            }
+            return taskResponsibleUserId(a) != null;
+        });
     }
 
     async function loadImport(importId, opts) {
@@ -1191,22 +1199,23 @@
         if (bodyEl) bodyEl.innerHTML = buildSendPreviewHtml(filterId, rows);
 
         const executionEnabled = !!diagnosticsCache?.execution_enabled;
-        const bitrixId = currentUserBitrixId();
+        const preparedActions = rows.flatMap((row) => getSendPreviewActions(row, filterId));
+        const canSend = canSendToBitrix({ execution_enabled: executionEnabled }, preparedActions);
 
         if (warningEl) {
             if (!executionEnabled) {
                 warningEl.classList.remove('d-none');
                 warningEl.textContent = 'Выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).';
-            } else if (bitrixId == null) {
+            } else if (!canSend) {
                 warningEl.classList.remove('d-none');
-                warningEl.textContent = 'У текущего пользователя не указан ID в Bitrix — укажите его в разделе «Пользователи».';
+                warningEl.textContent = 'У сделки не указан ответственный менеджер в Bitrix.';
             } else {
                 warningEl.classList.add('d-none');
                 warningEl.textContent = '';
             }
         }
         if (confirmBtn) {
-            confirmBtn.disabled = !executionEnabled || bitrixId == null || !rows.length;
+            confirmBtn.disabled = !canSend || !rows.length;
         }
 
         filterSendModal?.show();

@@ -48,7 +48,16 @@ def test_timezone_zip_contains_one_csv_per_timezone(export_dir):
             "79212222222",
         ]
         manifest = archive.read("manifest.csv").decode("utf-8-sig")
-        assert "Asia/Tomsk;10:00;1;Asia_Tomsk.csv" in manifest
+        assert (
+            "order;timezone;local_call_time;phone_count;filename;campaign_name" in manifest
+        )
+        assert (
+            "1;Asia/Tomsk;10:00;1;Asia_Tomsk.csv;Анечка_Asia_Tomsk_10-00" in manifest
+        )
+        readme = archive.read("README.txt").decode("utf-8-sig")
+        assert "РУЧНОЙ ЗАПУСК КАМПАНИЙ В TOMORU" in readme
+        assert "Всего кампаний: 2" in readme
+        assert "Всего номеров: 2" in readme
 
 
 def test_timezone_resolver_supports_known_region_id(db_session):

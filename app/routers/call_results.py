@@ -334,10 +334,11 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
             return None
         return user_map.get(label.assigned_by_id)
 
-    service_user_id = int(settings.bitrix_service_user_id or 0)
-
-    def task_responsible_user_id(_deal_id: int | None) -> int | None:
-        return service_user_id if service_user_id > 0 else None
+    def task_responsible_user_id(deal_id: int | None) -> int | None:
+        if not deal_id:
+            return None
+        label = deal_map.get(deal_id)
+        return int(label.assigned_by_id) if label and label.assigned_by_id else None
 
     by_method: dict[str, list[ActionOut]] = {}
     row_by_id = {r.id: r for r in rows}
