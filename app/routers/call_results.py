@@ -42,6 +42,7 @@ from app.schemas_call_results import (
     ManualResolveOut,
     ManualResolveRequest,
     MessageResponse,
+    RetryQueueMaterializeRequest,
     RowLlmDebugOut,
     RowListOut,
     RowOut,
@@ -1241,6 +1242,27 @@ def execute_status(
     )
 
 
+@router.post("/api/call-results/imports/{import_id}/retry-queue/materialize")
+def materialize_retry_queue(
+    import_id: int,
+    body: RetryQueueMaterializeRequest,
+    db: Session = Depends(get_session),
+):
+    """Create local retry rows without sending anything to Bitrix24 or Tomoru."""
+
+    portal_id, repo = _portal_repo(db)
+    if repo.get_import(import_id) is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    from app.services.call_results.retry_queue_materializer import RetryQueueMaterializer
+
+    report = RetryQueueMaterializer(db, portal_id).materialize_import(
+        import_id,
+        row_ids=body.row_ids,
+    )
+    db.commit()
+    return report.as_dict()
+
+
 @router.get("/api/call-results/retry-queue")
 def list_retry_queue(import_id: int | None = None, status: str | None = None, db: Session = Depends(get_session)):
     portal_id, _ = _portal_repo(db)
@@ -1250,6 +1272,50 @@ def list_retry_queue(import_id: int | None = None, status: str | None = None, db
     return gw.export_rows(entries)
 
 
+@router.get("/api/call-results/retry-queue/tomoru-preview")
+def preview_tomoru_retry_campaigns(
+    import_id: int | None = None,
+    db: Session = Depends(get_session),
+):
+    settings = get_app_settings(db)
+    portal_id, _ = _portal_repo(db)
+    from app.services.call_results.retry_queue_gateway import RetryQueueGateway
+    from app.services.call_results.tomoru_retry_campaign import TomoruRetryCampaignPlanner
+
+    entries = RetryQueueGateway(db, portal_id).list_entries(import_id=import_id, limit=None)
+    drafts = TomoruRetryCampaignPlanner(settings.tomoru_default_local_call_time).plan(entries)
+    return {
+        "mode": "dry_run",
+        "external_calls": False,
+        "default_local_call_time": settings.tomoru_default_local_call_time,
+        "campaign_count": len(drafts),
+        "queue_entry_count": sum(len(draft.contacts) for draft in drafts),
+        "campaigns": [draft.as_dict() for draft in drafts],
+    }
+
+
+@router.get("/api/call-results/retry-queue/tomoru-dry-run.zip")
+def export_tomoru_retry_dry_run_zip(
+    import_id: int | None = None,
+    db: Session = Depends(get_session),
+):
+    settings = get_app_settings(db)
+    portal_id, _ = _portal_repo(db)
+    from app.services.call_results.retry_queue_gateway import RetryQueueGateway
+    from app.services.call_results.tomoru_retry_campaign import TomoruRetryCampaignPlanner
+    from app.services.call_results.tomoru_retry_export import build_tomoru_retry_zip
+
+    entries = RetryQueueGateway(db, portal_id).list_entries(import_id=import_id, limit=None)
+    drafts = TomoruRetryCampaignPlanner(settings.tomoru_default_local_call_time).plan(entries)
+    content = build_tomoru_retry_zip(drafts)
+    filename = f"tomoru_retry_dry_run_{import_id}.zip" if import_id else "tomoru_retry_dry_run.zip"
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/api/call-results/retry-queue/export.csv")
 def export_retry_queue_csv(import_id: int | None = None, db: Session = Depends(get_session)):
     import csv
@@ -1257,13 +1323,18 @@ def export_retry_queue_csv(import_id: int | None = None, db: Session = Depends(g
     portal_id, _ = _portal_repo(db)
     from app.services.call_results.retry_queue_gateway import RetryQueueGateway
     gw = RetryQueueGateway(db, portal_id)
-    rows = gw.export_rows(gw.list_entries(import_id=import_id))
+    rows = gw.export_rows(gw.list_entries(import_id=import_id, limit=None))
     buf = io.StringIO()
     if rows:
         writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8")
+    filename = f"retry_queue_{import_id}.csv" if import_id is not None else "retry_queue.csv"
+    return Response(
+        content="\ufeff" + buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/api/call-results/contact-search")
@@ -1331,5 +1402,11 @@ def call_results_diagnostics(db: Session = Depends(get_session)):
         "contact_marker_error": marker.error,
         "contact_marker_warning": marker.warning,
         "retry_queue_available": True,
+        "tomoru_automation_mode": "events_live" if settings.tomoru_events_enabled else "events_dry_run",
+        "tomoru_external_calls_enabled": settings.tomoru_events_enabled,
+        "tomoru_bot_id_configured": bool(settings.tomoru_bot_id),
+        "tomoru_public_base_url_configured": bool(settings.tomoru_public_base_url),
+        "tomoru_webhook_secret_configured": bool(settings.tomoru_webhook_secret),
+        "tomoru_default_local_call_time": settings.tomoru_default_local_call_time,
         "contact_search_provider": settings.contact_search_provider,
     }

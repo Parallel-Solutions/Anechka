@@ -34,6 +34,8 @@ class RetryQueueGateway:
         replacement_contact_id: int | None = None,
         search_required: bool = False,
         timezone: str | None = None,
+        phone_extension: str | None = None,
+        attempt_count: int = 0,
         status: str = "ready",
     ) -> CallRetryQueueEntry:
         key = build_retry_idempotency_key(
@@ -52,6 +54,12 @@ class RetryQueueGateway:
             )
         )
         if existing:
+            if phone_extension and not existing.phone_extension:
+                existing.phone_extension = phone_extension
+            if timezone and not existing.timezone:
+                existing.timezone = timezone
+            if attempt_count > existing.attempt_count:
+                existing.attempt_count = attempt_count
             return existing
 
         entry = CallRetryQueueEntry(
@@ -63,6 +71,7 @@ class RetryQueueGateway:
             deal_id=deal_id,
             contact_id=contact_id or replacement_contact_id,
             phone_normalized=phone_normalized,
+            phone_extension=phone_extension,
             callback_at=callback_at,
             callback_text=callback_text,
             reason=reason,
@@ -72,6 +81,7 @@ class RetryQueueGateway:
             search_required=search_required,
             idempotency_key=key,
             timezone=timezone,
+            attempt_count=max(0, int(attempt_count or 0)),
             created_at=utcnow(),
             updated_at=utcnow(),
         )
@@ -84,29 +94,38 @@ class RetryQueueGateway:
         *,
         import_id: int | None = None,
         status: str | None = None,
-        limit: int = 500,
+        limit: int | None = 500,
     ) -> list[CallRetryQueueEntry]:
         q = select(CallRetryQueueEntry).where(CallRetryQueueEntry.portal_id == self.portal_id)
         if import_id is not None:
             q = q.where(CallRetryQueueEntry.import_id == import_id)
         if status:
             q = q.where(CallRetryQueueEntry.status == status)
-        q = q.order_by(CallRetryQueueEntry.created_at.desc()).limit(limit)
+        q = q.order_by(CallRetryQueueEntry.created_at.desc())
+        if limit is not None:
+            q = q.limit(limit)
         return list(self.db.scalars(q))
 
     def export_rows(self, entries: list[CallRetryQueueEntry]) -> list[dict[str, Any]]:
         return [
             {
                 "id": e.id,
+                "import_id": e.import_id,
+                "row_id": e.row_id,
                 "deal_id": e.deal_id,
                 "contact_id": e.contact_id,
                 "phone": e.phone_normalized,
+                "phone_extension": e.phone_extension or "",
                 "callback_at": e.callback_at.isoformat() if e.callback_at else "",
                 "callback_text": e.callback_text or "",
+                "timezone": e.timezone or "Europe/Moscow",
                 "reason": e.reason,
                 "status": e.status,
                 "campaign_id": e.campaign_id or "",
+                "dispatched_campaign_id": e.dispatched_campaign_id or "",
                 "source_call_id": e.source_call_id or "",
+                "attempt_count": e.attempt_count,
+                "last_error": e.last_error or "",
             }
             for e in entries
         ]

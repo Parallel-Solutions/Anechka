@@ -7,7 +7,7 @@ from urllib.parse import quote
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
-PUBLIC_PREFIXES = ("/static/",)
+PUBLIC_PREFIXES = ("/static/", "/tomoru-hooks/")
 PUBLIC_EXACT = {"/health", "/login", "/auth/login"}
 
 

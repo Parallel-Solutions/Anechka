@@ -70,6 +70,10 @@ class ExecuteRequest(BaseModel):
     retry_failed_only: bool = False
 
 
+class RetryQueueMaterializeRequest(BaseModel):
+    row_ids: list[int] | None = None
+
+
 class ExecuteLogItemOut(BaseModel):
     id: int
     import_row_id: int

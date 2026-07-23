@@ -214,10 +214,12 @@ class CrmActionService:
                 reason = action.payload.get("reason", "callback_later")
                 search_required = bool(action.payload.get("search_required"))
                 phone = None if search_required else row.normalized_phone
+                phone_extension = row.phone_extension
                 resolved_contact_id = action.payload.get("contact_id") or self._ctx.get("contact_id")
                 if resolved_contact_id:
                     ac = (row.business_signals or {}).get("alternate_contact") or {}
                     phone = ac.get("phone") or phone
+                    phone_extension = ac.get("extension") or phone_extension
                 self.retry_gw.add(
                     import_id=imp.id,
                     row_id=row.id,
@@ -233,6 +235,8 @@ class CrmActionService:
                     replacement_contact_id=self._ctx.get("contact_id"),
                     search_required=search_required,
                     timezone=action.payload.get("timezone"),
+                    phone_extension=phone_extension,
+                    attempt_count=row.attempts or 0,
                 )
                 res = type("R", (), {"success": True, "external_id": None, "response": {}, "error": None})()
             elif op == "contact_search_queue_add":

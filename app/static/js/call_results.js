@@ -646,6 +646,9 @@
         document.getElementById('btn-send-and-export')?.addEventListener('click', () => {
             if (currentImportId) runSendAndExport(currentImportId);
         });
+        document.getElementById('btn-prepare-retry-export')?.addEventListener('click', () => {
+            if (currentImportId) runRetryExportOnly(currentImportId);
+        });
     }
 
     function applyImportMeta(data) {
@@ -942,19 +945,64 @@
 
     function updateSendAndExportButton() {
         const btn = document.getElementById('btn-send-and-export');
-        if (!btn) return;
+        const retryBtn = document.getElementById('btn-prepare-retry-export');
+        if (!btn && !retryBtn) return;
         const processing = currentImportStatus === 'processing' || currentImportStatus === 'uploaded';
         const executing = importSummaryCache?.execute_status === 'executing';
         const sendCount = collectBitrixSendRowIds().length;
         const autoCount = collectFilteredPhones(getFilteredRows('auto_call')).length;
-        btn.disabled = processing || executing || (sendCount === 0 && autoCount === 0);
+        if (btn) btn.disabled = processing || executing || (sendCount === 0 && autoCount === 0);
+        if (retryBtn) retryBtn.disabled = processing || autoCount === 0;
+    }
+
+    async function prepareRetryExport(importId, autoRows) {
+        const rowIds = autoRows.map((row) => row.id);
+        const response = await fetch(`/api/call-results/imports/${importId}/retry-queue/materialize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ row_ids: rowIds }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Не удалось подготовить очередь повторных звонков');
+        const link = document.createElement('a');
+        link.href = `/api/call-results/retry-queue/tomoru-dry-run.zip?import_id=${importId}`;
+        link.download = `tomoru_retry_dry_run_${importId}.zip`;
+        link.click();
+        resetQueueCacheState();
+        return data;
+    }
+
+    async function runRetryExportOnly(importId) {
+        const alertEl = document.getElementById('import-alert');
+        const btn = document.getElementById('btn-prepare-retry-export');
+        const autoRows = getFilteredRows('auto_call');
+        const phoneCount = collectFilteredPhones(autoRows).length;
+        if (!phoneCount) {
+            showAlert(alertEl, 'Нет подготовленных повторных звонков.', 'warning');
+            return;
+        }
+        try {
+            if (btn) btn.disabled = true;
+            const data = await prepareRetryExport(importId, autoRows);
+            const queueCount = Number(data.created || 0) + Number(data.existing || 0);
+            showAlert(
+                alertEl,
+                `Подготовлен ZIP для ${queueCount} повторных звонков. Bitrix24 и Tomoru не изменялись.`,
+                'success',
+            );
+        } catch (error) {
+            showAlert(alertEl, error.message, 'danger');
+        } finally {
+            updateSendAndExportButton();
+        }
     }
 
     async function runSendAndExport(importId) {
         const alertEl = document.getElementById('import-alert');
         const btn = document.getElementById('btn-send-and-export');
         const sendRowIds = collectBitrixSendRowIds();
-        const autoPhones = collectFilteredPhones(getFilteredRows('auto_call'));
+        const autoRows = getFilteredRows('auto_call');
+        const autoPhones = collectFilteredPhones(autoRows);
         const messages = [];
         let sendStarted = false;
 
@@ -981,7 +1029,7 @@
             }
 
             if (autoPhones.length > 0) {
-                exportFilteredList('auto_call', importId);
+                await prepareRetryExport(importId, autoRows);
                 messages.push(`Скачан список автобзвона: ${autoPhones.length} телефонов.`);
             }
 

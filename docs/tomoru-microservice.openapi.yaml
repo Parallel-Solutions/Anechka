@@ -1,0 +1,110 @@
+openapi: 3.0.3
+info:
+  version: 1.0.0
+  title: Anechka retry calls
+  description: |
+    Receives a Tomoru callback URL and sends scheduled retry-call events.
+    External dispatch is disabled until TOMORU_EVENTS_ENABLED=true.
+servers:
+  - url: https://anechka.example.com
+paths:
+  /tomoru-hooks/subscribe:
+    post:
+      operationId: subscribeAnechkaToTomoru
+      summary: Subscribe Anechka to Tomoru events
+      tags:
+        - tomoru/subscribe
+      security:
+        - webhookSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tomoruCallbackUrl:
+                  type: string
+                  format: uri
+              required:
+                - tomoruCallbackUrl
+      callbacks:
+        coldCall:
+          '{$request.body#/tomoruCallbackUrl}':
+            post:
+              summary: Scheduled retry call
+              description: Call a phone number from the Anechka retry queue.
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      allOf:
+                        - $ref: 'https://api.tomoru.ru/openapi#/components/schemas/TomoruEvent'
+                        - type: object
+                          properties:
+                            data:
+                              type: object
+                              properties:
+                                queueEntryId:
+                                  type: integer
+                                reason:
+                                  type: string
+                                scheduledAt:
+                                  type: string
+                                  format: date-time
+                                timezone:
+                                  type: string
+                                phoneExtension:
+                                  type: string
+                                  nullable: true
+                                dealId:
+                                  type: integer
+                                  nullable: true
+                                contactId:
+                                  type: integer
+                                  nullable: true
+                                callbackText:
+                                  type: string
+                                  nullable: true
+                                attemptCount:
+                                  type: integer
+                              required:
+                                - queueEntryId
+                                - reason
+                                - scheduledAt
+                                - timezone
+              responses:
+                '200':
+                  description: Event accepted
+      responses:
+        '200':
+          description: Callback URL saved
+  /tomoru-hooks/event-status:
+    post:
+      operationId: updateAnechkaEventStatus
+      summary: Update retry-call event status
+      tags:
+        - tomoru/event_status_changed
+      security:
+        - webhookSecret: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                eventStatus:
+                  $ref: 'https://api.tomoru.ru/openapi#/components/schemas/TomoruEventStatus'
+              required:
+                - eventStatus
+      responses:
+        '200':
+          description: Queue status updated
+components:
+  securitySchemes:
+    webhookSecret:
+      type: apiKey
+      in: header
+      name: X-Anechka-Tomoru-Secret
