@@ -57,11 +57,53 @@
                     <div class="form-text">Формат: ГГГГ-ММ-ДД</div>
                 </div>
                 <div class="col-12">
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" id="group-by-timezone">
+                        <label class="form-check-label" for="group-by-timezone">Разделить по часовым поясам</label>
+                        <div class="form-text">Скачается ZIP с отдельным CSV для каждого часового пояса, планом manifest.csv и пошаговой инструкцией README.txt. Каждый файл запускайте в Tomoru в 10:00 местного времени.</div>
+                    </div>
                     <button type="submit" class="btn btn-primary" id="submit-btn">Запустить выгрузку</button>
                     <span id="form-message" class="ms-3 small text-muted"></span>
                 </div>
             </div>
         </form>
+    </div>
+</div>
+<div class="card shadow-sm mb-4">
+    <div class="card-header">Компании без сделок</div>
+    <div class="card-body">
+        <p class="text-muted small">Отдельный CSV с уникальными телефонами компаний, не связанных ни с одной сделкой, и их контактов. Учитывается выбранный выше период создания.</p>
+        <button class="btn btn-outline-primary" type="button" id="companies-without-deals-submit">Скачать CSV компаний</button>
+        <span id="companies-without-deals-message" class="ms-3 small text-muted"></span>
+    </div>
+</div>
+<div class="card shadow-sm mb-4">
+    <div class="card-header">Внешний список телефонов</div>
+    <div class="card-body">
+        <p class="text-muted small">Загрузите CSV или XLSX из СБИС, Контура, 1С или другой системы. Сервис найдёт колонку с телефонами, нормализует номера и покажет результат перед скачиванием.</p>
+        <form id="external-phone-form" class="row g-2 align-items-end">
+            <div class="col-md-8">
+                <label class="form-label" for="external-phone-file">Файл с телефонами</label>
+                <input class="form-control" type="file" id="external-phone-file" accept=".csv,.xlsx" required>
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-outline-primary" type="submit" id="external-phone-submit">Проверить файл</button>
+            </div>
+            <div class="col-12"><span id="external-phone-message" class="small text-muted"></span></div>
+        </form>
+        <div class="d-none mt-3" id="external-phone-preview">
+            <div class="alert alert-light border py-2 mb-3" id="external-phone-summary"></div>
+            <div class="table-responsive border rounded mb-2" style="max-height: 300px;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                        <tr><th style="width: 5rem;">№</th><th>phone_number</th></tr>
+                    </thead>
+                    <tbody id="external-phone-preview-body"></tbody>
+                </table>
+            </div>
+            <div class="small text-muted mb-3" id="external-phone-preview-note"></div>
+            <button class="btn btn-primary" type="button" id="external-phone-download" disabled>Скачать CSV для Tomoru</button>
+        </div>
     </div>
 </div>
 <div class="card shadow-sm mb-4" id="deals-preview-card">
@@ -160,6 +202,17 @@
     const manuallyChangedDeals = new Set();
     const saveContactTimers = {};
     const submitBtnDefaultText = submitBtn.textContent;
+    const externalPhoneForm = document.getElementById('external-phone-form');
+    const externalPhoneFile = document.getElementById('external-phone-file');
+    const externalPhoneSubmit = document.getElementById('external-phone-submit');
+    const externalPhoneMessage = document.getElementById('external-phone-message');
+    const externalPhonePreview = document.getElementById('external-phone-preview');
+    const externalPhoneSummary = document.getElementById('external-phone-summary');
+    const externalPhonePreviewBody = document.getElementById('external-phone-preview-body');
+    const externalPhonePreviewNote = document.getElementById('external-phone-preview-note');
+    const externalPhoneDownload = document.getElementById('external-phone-download');
+    const companiesWithoutDealsSubmit = document.getElementById('companies-without-deals-submit');
+    const companiesWithoutDealsMessage = document.getElementById('companies-without-deals-message');
     let applyingFromUrl = false;
     function loadLprViewPreference() {
         try {
@@ -438,6 +491,126 @@
         a.remove();
         URL.revokeObjectURL(url);
     }
+    companiesWithoutDealsSubmit.addEventListener('click', async () => {
+        companiesWithoutDealsSubmit.disabled = true;
+        companiesWithoutDealsMessage.textContent = 'Формируем список…';
+        companiesWithoutDealsMessage.className = 'ms-3 small text-muted';
+        try {
+            const dates = readDateRangeFromPicker();
+            const params = new URLSearchParams();
+            if (dates.date_from) params.set('date_from', dates.date_from);
+            if (dates.date_to) params.set('date_to', dates.date_to);
+            const resp = await fetch('/exports/tomoru/companies-without-deals/download?' + params.toString());
+            if (!resp.ok) {
+                const error = await resp.json().catch(() => ({}));
+                throw new Error(error.detail || ('HTTP ' + resp.status));
+            }
+            const blob = await resp.blob();
+            const filename = parseContentDispositionFilename(resp.headers.get('Content-Disposition'))
+                || 'tomoru_companies_without_deals.csv';
+            downloadBlob(blob, filename);
+            const companies = resp.headers.get('X-Companies-Without-Deals') || '0';
+            const phones = resp.headers.get('X-Export-Phones') || '0';
+            companiesWithoutDealsMessage.textContent = `CSV скачан: ${companies} компаний, ${phones} телефонов`;
+            companiesWithoutDealsMessage.className = 'ms-3 small text-success';
+        } catch (error) {
+            companiesWithoutDealsMessage.textContent = error.message;
+            companiesWithoutDealsMessage.className = 'ms-3 small text-danger';
+        } finally {
+            companiesWithoutDealsSubmit.disabled = false;
+        }
+    });
+    function selectedExternalPhoneFile() {
+        return externalPhoneFile.files && externalPhoneFile.files[0];
+    }
+    function resetExternalPhonePreview() {
+        externalPhonePreview.classList.add('d-none');
+        externalPhoneSummary.textContent = '';
+        externalPhonePreviewBody.innerHTML = '';
+        externalPhonePreviewNote.textContent = '';
+        externalPhoneDownload.disabled = true;
+    }
+    externalPhoneFile.addEventListener('change', () => {
+        resetExternalPhonePreview();
+        externalPhoneMessage.textContent = '';
+        externalPhoneMessage.className = 'small text-muted';
+    });
+    externalPhoneForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const file = selectedExternalPhoneFile();
+        resetExternalPhonePreview();
+        if (!file) {
+            externalPhoneMessage.textContent = 'Выберите CSV или XLSX';
+            externalPhoneMessage.className = 'small text-danger';
+            return;
+        }
+        externalPhoneSubmit.disabled = true;
+        externalPhoneMessage.textContent = 'Проверяем файл…';
+        externalPhoneMessage.className = 'small text-muted';
+        try {
+            const body = new FormData();
+            body.append('file', file);
+            const resp = await fetch('/exports/tomoru/external/preview', {method: 'POST', body});
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                throw new Error(data.detail || ('HTTP ' + resp.status));
+            }
+            const phones = Array.isArray(data.phones) ? data.phones : [];
+            externalPhoneSummary.textContent =
+                'Файл: ' + data.filename + '. Строк: ' + data.rows_total +
+                '; с телефоном: ' + data.rows_with_phone +
+                '; без телефона: ' + data.invalid_rows +
+                '; уникальных телефонов: ' + data.phones_total + '.';
+            externalPhonePreviewBody.innerHTML = phones.map((phone, index) =>
+                '<tr><td>' + (index + 1) + '</td><td>' + escapeHtml(phone) + '</td></tr>'
+            ).join('');
+            externalPhonePreviewNote.textContent = data.preview_truncated
+                ? 'Показаны первые ' + phones.length + ' номеров. В CSV попадут все ' + data.phones_total + '.'
+                : 'Показаны все ' + data.phones_total + ' номеров.';
+            externalPhonePreview.classList.remove('d-none');
+            externalPhoneDownload.disabled = false;
+            externalPhoneMessage.textContent = 'Файл проверен. Просмотрите номера и скачайте CSV.';
+            externalPhoneMessage.className = 'small text-success';
+        } catch (error) {
+            externalPhoneMessage.textContent = error.message;
+            externalPhoneMessage.className = 'small text-danger';
+        } finally {
+            externalPhoneSubmit.disabled = false;
+        }
+    });
+    externalPhoneDownload.addEventListener('click', async () => {
+        const file = selectedExternalPhoneFile();
+        if (!file) {
+            resetExternalPhonePreview();
+            externalPhoneMessage.textContent = 'Выберите CSV или XLSX';
+            externalPhoneMessage.className = 'small text-danger';
+            return;
+        }
+        externalPhoneDownload.disabled = true;
+        externalPhoneMessage.textContent = 'Готовим CSV для Tomoru…';
+        externalPhoneMessage.className = 'small text-muted';
+        try {
+            const body = new FormData();
+            body.append('file', file);
+            const resp = await fetch('/exports/tomoru/external/download', {method: 'POST', body});
+            if (!resp.ok) {
+                const error = await resp.json().catch(() => ({}));
+                throw new Error(error.detail || ('HTTP ' + resp.status));
+            }
+            const blob = await resp.blob();
+            const filename = parseContentDispositionFilename(resp.headers.get('Content-Disposition'))
+                || 'tomoru_external_phones.csv';
+            downloadBlob(blob, filename);
+            const phoneCount = resp.headers.get('X-Export-Phones') || '0';
+            externalPhoneMessage.textContent = 'CSV скачан: ' + phoneCount + ' телефонов';
+            externalPhoneMessage.className = 'small text-success';
+        } catch (error) {
+            externalPhoneMessage.textContent = error.message;
+            externalPhoneMessage.className = 'small text-danger';
+        } finally {
+            externalPhoneDownload.disabled = false;
+        }
+    });
     function escapeHtml(text) {
         if (text === null || text === undefined) return '';
         return String(text)
@@ -1109,7 +1282,7 @@
         }
         window.open(TOMORU_APP_URL, '_blank', 'noopener,noreferrer');
         submitBtn.disabled = true;
-        submitBtn.innerHTML = loadingHtml('Формирование CSV…');
+        submitBtn.innerHTML = loadingHtml('Формирование файла…');
         const regions = regionsFromIds(f.region_ids);
         const payload = {
             entity_type: 'deal',
@@ -1119,6 +1292,8 @@
             date_to: f.date_to || null,
             region_ids: f.region_ids,
             region_names: regions.map((r) => r.name).filter(Boolean),
+            group_by_timezone: document.getElementById('group-by-timezone').checked,
+            local_call_time: '10:00',
         };
         const overrides = {};
         manuallyChangedDeals.forEach((dealKey) => {
@@ -1145,7 +1320,7 @@
             const filename = parseContentDispositionFilename(resp.headers.get('Content-Disposition'))
                 || 'tomoru_export.csv';
             downloadBlob(blob, filename);
-            setMessage('CSV скачан', false);
+            setMessage(payload.group_by_timezone ? 'ZIP по часовым поясам скачан' : 'CSV скачан', false);
         } catch(err) {
             setMessage(err.message, true);
         } finally {

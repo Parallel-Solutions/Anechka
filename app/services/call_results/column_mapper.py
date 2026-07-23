@@ -28,6 +28,9 @@ FIELD_ALIASES: dict[str, list[str]] = {
     ],
     "call_id": ["call_id"],
     "campaign_id": ["campaign_id"],
+    "campaign_name": [
+        "campaign_name", "campaign", "campaign_title", "название кампании", "кампания",
+    ],
     "recording_url": ["recording_url"],
     "transcript": ["transcript", "расшифровка", "транскрипт"],
     "deal_id": ["deal_id"],

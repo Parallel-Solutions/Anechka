@@ -7,11 +7,25 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import CrmEntity, CrmEntityFieldValue, CrmFieldDefinition
+from app.models import (
+    CrmDictionary,
+    CrmDictionaryEntry,
+    CrmEntity,
+    CrmEntityFieldValue,
+    CrmFieldDefinition,
+)
 from app.services.export_plan.payload_keys import camel_key
 from app.services.intelligent_export.contact_phone_heuristic import TOMORU_REGION_FIELD
 
 # Region name (lowercase substring) -> IANA timezone
+_REGION_ID_TZ: dict[str, str] = {
+    "1105": "Europe/Moscow",       # Москва
+    "1107": "Europe/Moscow",       # Санкт-Петербург
+    "1091": "Asia/Tomsk",          # Томск
+    "1089": "Europe/Moscow",       # Тверь
+    "1007": "Asia/Yakutsk",        # Амурская область
+}
+
 _REGION_TZ: dict[str, str] = {
     "москва": "Europe/Moscow",
     "московск": "Europe/Moscow",
@@ -32,6 +46,70 @@ _REGION_TZ: dict[str, str] = {
     "казань": "Europe/Moscow",
     "ростов": "Europe/Moscow",
     "краснодар": "Europe/Moscow",
+    "архангельск": "Europe/Moscow",
+    "белгород": "Europe/Moscow",
+    "брянск": "Europe/Moscow",
+    "владимир": "Europe/Moscow",
+    "волгоград": "Europe/Moscow",
+    "вологод": "Europe/Moscow",
+    "воронеж": "Europe/Moscow",
+    "дагестан": "Europe/Moscow",
+    "иванов": "Europe/Moscow",
+    "кабардино": "Europe/Moscow",
+    "калмык": "Europe/Moscow",
+    "калуж": "Europe/Moscow",
+    "карачаево": "Europe/Moscow",
+    "карел": "Europe/Moscow",
+    "киров": "Europe/Moscow",
+    "коми": "Europe/Moscow",
+    "костром": "Europe/Moscow",
+    "курск": "Europe/Moscow",
+    "липецк": "Europe/Moscow",
+    "марий": "Europe/Moscow",
+    "мордов": "Europe/Moscow",
+    "мурман": "Europe/Moscow",
+    "нижегород": "Europe/Moscow",
+    "новгород": "Europe/Moscow",
+    "орлов": "Europe/Moscow",
+    "пенз": "Europe/Moscow",
+    "псков": "Europe/Moscow",
+    "рязан": "Europe/Moscow",
+    "северная осет": "Europe/Moscow",
+    "смолен": "Europe/Moscow",
+    "ставропол": "Europe/Moscow",
+    "тамбов": "Europe/Moscow",
+    "твер": "Europe/Moscow",
+    "туль": "Europe/Moscow",
+    "чечен": "Europe/Moscow",
+    "чуваш": "Europe/Moscow",
+    "ярослав": "Europe/Moscow",
+    "астрахан": "Europe/Samara",
+    "саратов": "Europe/Samara",
+    "ульянов": "Europe/Samara",
+    "удмурт": "Europe/Samara",
+    "башкортостан": "Asia/Yekaterinburg",
+    "курган": "Asia/Yekaterinburg",
+    "оренбург": "Asia/Yekaterinburg",
+    "тюмен": "Asia/Yekaterinburg",
+    "челябин": "Asia/Yekaterinburg",
+    "ханты-мансий": "Asia/Yekaterinburg",
+    "ямало-ненец": "Asia/Yekaterinburg",
+    "алтай": "Asia/Krasnoyarsk",
+    "кемеров": "Asia/Krasnoyarsk",
+    "тыва": "Asia/Krasnoyarsk",
+    "хакас": "Asia/Krasnoyarsk",
+    "бурят": "Asia/Irkutsk",
+    "амур": "Asia/Yakutsk",
+    "забайкал": "Asia/Yakutsk",
+    "саха": "Asia/Yakutsk",
+    "якут": "Asia/Yakutsk",
+    "примор": "Asia/Vladivostok",
+    "хабаров": "Asia/Vladivostok",
+    "еврейск": "Asia/Vladivostok",
+    "магадан": "Asia/Magadan",
+    "сахалин": "Asia/Sakhalin",
+    "камчат": "Asia/Kamchatka",
+    "чукот": "Asia/Anadyr",
 }
 
 
@@ -77,7 +155,8 @@ class DealTimezoneResolver:
         for key in (TOMORU_REGION_FIELD, camel_key(TOMORU_REGION_FIELD)):
             val = payload.get(key)
             if val not in (None, ""):
-                return str(val).strip()
+                raw_region = str(val).strip()
+                return self._dictionary_region_name(raw_region) or raw_region
 
         fv = self.db.scalar(
             select(CrmEntityFieldValue)
@@ -93,12 +172,36 @@ class DealTimezoneResolver:
                 CrmFieldDefinition.original_field_name == TOMORU_REGION_FIELD,
             )
         )
-        if fv is None or not fv.text_value:
+        if fv is None:
             return None
-        return str(fv.text_value).strip()
+        if fv.dictionary_entry_id:
+            entry = self.db.get(CrmDictionaryEntry, int(fv.dictionary_entry_id))
+            if entry is not None:
+                return str(entry.normalized_value or entry.raw_value or entry.external_id).strip()
+        if not fv.text_value:
+            return None
+        raw_region = str(fv.text_value).strip()
+        return self._dictionary_region_name(raw_region) or raw_region
+
+    def _dictionary_region_name(self, external_id: str) -> str | None:
+        entry = self.db.scalar(
+            select(CrmDictionaryEntry)
+            .join(CrmDictionary, CrmDictionary.id == CrmDictionaryEntry.dictionary_id)
+            .where(
+                CrmDictionary.portal_id == self.portal_id,
+                CrmDictionaryEntry.external_id == external_id,
+                CrmDictionaryEntry.is_active.is_(True),
+            )
+        )
+        if entry is None:
+            return None
+        return str(entry.normalized_value or entry.raw_value or entry.external_id).strip()
 
     @staticmethod
     def _region_to_tz(region: str) -> str:
+        direct = _REGION_ID_TZ.get(region.strip())
+        if direct:
+            return direct
         low = region.lower()
         for key, tz in _REGION_TZ.items():
             if key in low:

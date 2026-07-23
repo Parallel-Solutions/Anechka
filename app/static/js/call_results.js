@@ -34,6 +34,16 @@
         needs_manual_review: 'bg-warning text-dark',
     };
 
+    const BUSINESS_GROUP_BADGE_CLASSES = {
+        conversation_yes: 'bg-success',
+        conversation_no: 'bg-danger',
+        callback_same: 'bg-primary',
+        callback_other: 'bg-info text-dark',
+        conversation_unclear: 'bg-warning text-dark',
+        no_answer: 'bg-secondary',
+        other: 'bg-dark',
+    };
+
     const HANGUP_REPLACEMENT_SIGNAL_KEYS = ['hangup_without_result', 'replacement_contact_required'];
     const HANGUP_REPLACEMENT_BADGE = {
         label: 'Сброс трубки',
@@ -636,13 +646,18 @@
         document.getElementById('btn-send-and-export')?.addEventListener('click', () => {
             if (currentImportId) runSendAndExport(currentImportId);
         });
+        document.getElementById('btn-prepare-retry-export')?.addEventListener('click', () => {
+            if (currentImportId) runRetryExportOnly(currentImportId);
+        });
     }
 
     function applyImportMeta(data) {
         currentImportStatus = data.status ?? currentImportStatus;
         const meta = document.getElementById('import-meta');
         if (meta && data.original_filename) {
-            meta.textContent = data.original_filename;
+            meta.textContent = data.campaign_name
+                ? data.campaign_name + ' — ' + data.original_filename
+                : data.original_filename;
         }
         const restartBtn = document.getElementById('btn-restart');
         if (restartBtn) restartBtn.disabled = data.status === 'processing';
@@ -712,11 +727,16 @@
     }
 
     function taskResponsibleUserId(action) {
+        if (action?.task_responsible_user_id != null) return action.task_responsible_user_id;
+        return null;
+    }
+
+    function taskCreatorUserId(action) {
         const operatorId = currentUserBitrixId();
         if (operatorId != null) return operatorId;
-        if (action?.task_responsible_user_id != null) return action.task_responsible_user_id;
         const serviceId = diagnosticsCache?.bitrix_service_user_id;
-        return serviceId > 0 ? serviceId : null;
+        if (serviceId > 0) return serviceId;
+        return taskResponsibleUserId(action);
     }
 
     function applyPreviewResponsibleUser(payload, method, action) {
@@ -725,11 +745,12 @@
             const userId = taskResponsibleUserId(action);
             if (userId != null) copy.responsibleId = userId;
         } else if (method === 'tasks.task.add') {
-            const userId = taskResponsibleUserId(action);
-            if (userId != null) {
+            const responsibleId = taskResponsibleUserId(action);
+            const creatorId = taskCreatorUserId(action);
+            if (responsibleId != null && creatorId != null) {
                 const fields = { ...(copy.fields || copy) };
-                fields.RESPONSIBLE_ID = userId;
-                fields.CREATED_BY = userId;
+                fields.RESPONSIBLE_ID = responsibleId;
+                fields.CREATED_BY = creatorId;
                 copy.fields = fields;
             }
         }
@@ -741,13 +762,15 @@
         const webhookOk = diagnosticsCache?.bitrix_webhook_configured !== false;
         if (!execEnabled || !webhookOk) return false;
         const actions = preparedActions || [];
-        const needsResponsible = actions.some(
+        const taskActions = actions.filter(
             (a) => (a.method === 'crm.activity.todo.add' || a.method === 'tasks.task.add') && a.is_enabled !== false,
         );
-        if (needsResponsible) {
-            return actions.some((a) => taskResponsibleUserId(a) != null);
-        }
-        return true;
+        return taskActions.every((a) => {
+            if (a.method === 'tasks.task.add') {
+                return taskResponsibleUserId(a) != null && taskCreatorUserId(a) != null;
+            }
+            return taskResponsibleUserId(a) != null;
+        });
     }
 
     async function loadImport(importId, opts) {
@@ -922,19 +945,64 @@
 
     function updateSendAndExportButton() {
         const btn = document.getElementById('btn-send-and-export');
-        if (!btn) return;
+        const retryBtn = document.getElementById('btn-prepare-retry-export');
+        if (!btn && !retryBtn) return;
         const processing = currentImportStatus === 'processing' || currentImportStatus === 'uploaded';
         const executing = importSummaryCache?.execute_status === 'executing';
         const sendCount = collectBitrixSendRowIds().length;
         const autoCount = collectFilteredPhones(getFilteredRows('auto_call')).length;
-        btn.disabled = processing || executing || (sendCount === 0 && autoCount === 0);
+        if (btn) btn.disabled = processing || executing || (sendCount === 0 && autoCount === 0);
+        if (retryBtn) retryBtn.disabled = processing || autoCount === 0;
+    }
+
+    async function prepareRetryExport(importId, autoRows) {
+        const rowIds = autoRows.map((row) => row.id);
+        const response = await fetch(`/api/call-results/imports/${importId}/retry-queue/materialize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ row_ids: rowIds }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || 'Не удалось подготовить очередь повторных звонков');
+        const link = document.createElement('a');
+        link.href = `/api/call-results/retry-queue/tomoru-dry-run.zip?import_id=${importId}`;
+        link.download = `tomoru_retry_dry_run_${importId}.zip`;
+        link.click();
+        resetQueueCacheState();
+        return data;
+    }
+
+    async function runRetryExportOnly(importId) {
+        const alertEl = document.getElementById('import-alert');
+        const btn = document.getElementById('btn-prepare-retry-export');
+        const autoRows = getFilteredRows('auto_call');
+        const phoneCount = collectFilteredPhones(autoRows).length;
+        if (!phoneCount) {
+            showAlert(alertEl, 'Нет подготовленных повторных звонков.', 'warning');
+            return;
+        }
+        try {
+            if (btn) btn.disabled = true;
+            const data = await prepareRetryExport(importId, autoRows);
+            const queueCount = Number(data.created || 0) + Number(data.existing || 0);
+            showAlert(
+                alertEl,
+                `Подготовлен ZIP для ${queueCount} повторных звонков. Bitrix24 и Tomoru не изменялись.`,
+                'success',
+            );
+        } catch (error) {
+            showAlert(alertEl, error.message, 'danger');
+        } finally {
+            updateSendAndExportButton();
+        }
     }
 
     async function runSendAndExport(importId) {
         const alertEl = document.getElementById('import-alert');
         const btn = document.getElementById('btn-send-and-export');
         const sendRowIds = collectBitrixSendRowIds();
-        const autoPhones = collectFilteredPhones(getFilteredRows('auto_call'));
+        const autoRows = getFilteredRows('auto_call');
+        const autoPhones = collectFilteredPhones(autoRows);
         const messages = [];
         let sendStarted = false;
 
@@ -961,7 +1029,7 @@
             }
 
             if (autoPhones.length > 0) {
-                exportFilteredList('auto_call', importId);
+                await prepareRetryExport(importId, autoRows);
                 messages.push(`Скачан список автобзвона: ${autoPhones.length} телефонов.`);
             }
 
@@ -1179,22 +1247,23 @@
         if (bodyEl) bodyEl.innerHTML = buildSendPreviewHtml(filterId, rows);
 
         const executionEnabled = !!diagnosticsCache?.execution_enabled;
-        const bitrixId = currentUserBitrixId();
+        const preparedActions = rows.flatMap((row) => getSendPreviewActions(row, filterId));
+        const canSend = canSendToBitrix({ execution_enabled: executionEnabled }, preparedActions);
 
         if (warningEl) {
             if (!executionEnabled) {
                 warningEl.classList.remove('d-none');
                 warningEl.textContent = 'Выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).';
-            } else if (bitrixId == null) {
+            } else if (!canSend) {
                 warningEl.classList.remove('d-none');
-                warningEl.textContent = 'У текущего пользователя не указан ID в Bitrix — укажите его в разделе «Пользователи».';
+                warningEl.textContent = 'У сделки не указан ответственный менеджер в Bitrix.';
             } else {
                 warningEl.classList.add('d-none');
                 warningEl.textContent = '';
             }
         }
         if (confirmBtn) {
-            confirmBtn.disabled = !executionEnabled || bitrixId == null || !rows.length;
+            confirmBtn.disabled = !canSend || !rows.length;
         }
 
         filterSendModal?.show();
@@ -1451,12 +1520,13 @@
             <div class="table-responsive">
                 <table class="table table-sm table-hover mb-0 filtered-list-table">
                     <thead><tr>
-                        <th>Строка</th><th>Телефон</th><th>Сделка</th><th>Сигналы</th><th></th>
+                        <th>Строка</th><th>Телефон</th><th>Сделка</th><th>Бизнес-группа</th><th>Сигналы</th><th></th>
                     </tr></thead>
                     <tbody>${rows.map((r) => `<tr data-row-id="${r.id}"${r.id === currentViewRowId ? ' class="table-active"' : ''}>
                         <td>${r.source_row_number}</td>
                         <td>${renderPhoneLink(r.raw_phone)}</td>
                         <td class="text-truncate" style="max-width:180px" title="${escapeHtml(getDealTitle(r))}">${renderDealCell(r)}</td>
+                        <td>${businessGroupBadge(r)}</td>
                         <td>${signalBadges(r.business_signals, r)}</td>
                         <td><button type="button" class="btn btn-sm btn-primary btn-view-row" data-row-id="${r.id}">Просмотреть</button></td>
                     </tr>`).join('')}</tbody>
@@ -1524,6 +1594,7 @@
                 <dt class="col-sm-4">Телефон</dt><dd class="col-sm-8">${renderPhoneLink(row.raw_phone)}</dd>
                 <dt class="col-sm-4">Время звонка</dt><dd class="col-sm-8">${escapeHtml(formatCalledAt(row.called_at))}</dd>
                 <dt class="col-sm-4">Сделка</dt><dd class="col-sm-8">${renderDealCell(row)}</dd>
+                <dt class="col-sm-4">Бизнес-группа</dt><dd class="col-sm-8">${businessGroupBadge(row)}</dd>
                 ${row.manual_review_reason ? `<dt class="col-sm-4">Причина проверки</dt><dd class="col-sm-8 text-warning">${escapeHtml(row.manual_review_reason)}</dd>` : ''}
                 ${extraRowsHtml}
             </dl>
@@ -2036,6 +2107,13 @@
         } else {
             rowViewModal?.show();
         }
+    }
+
+    function businessGroupBadge(row) {
+        const code = row?.business_group || 'other';
+        const label = row?.business_group_label || 'ИНОЕ';
+        const cls = BUSINESS_GROUP_BADGE_CLASSES[code] || 'bg-dark';
+        return '<span class="badge ' + cls + ' text-wrap text-start">' + escapeHtml(label) + '</span>';
     }
 
     function signalBadges(signals, row) {

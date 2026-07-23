@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_auth_service, get_current_user, get_session
+from app.dependencies import get_auth_service, get_current_user, get_session, require_role
 from app.models import AppUser
 from app.services.auth_service import AuthService
 
@@ -24,6 +24,7 @@ class UserOut(BaseModel):
     id: int
     email: str
     display_name: str
+    role: str
     is_active: bool
     crm_user_external_id: int | None = None
 
@@ -33,6 +34,7 @@ class UserOut(BaseModel):
             id=user.id,
             email=user.email,
             display_name=user.display_name,
+            role=user.role,
             is_active=user.is_active,
             crm_user_external_id=user.crm_user_external_id,
         )
@@ -42,12 +44,14 @@ class CreateUserRequest(BaseModel):
     email: str
     password: str = Field(min_length=6)
     display_name: str = ""
+    role: Literal["admin", "analyst", "viewer"] = "viewer"
     crm_user_external_id: int | None = None
 
 
 class UpdateUserRequest(BaseModel):
     display_name: str | None = None
     password: str | None = Field(default=None, min_length=6)
+    role: Literal["admin", "analyst", "viewer"] | None = None
     is_active: bool | None = None
 
 
@@ -102,7 +106,7 @@ def me(user: AppUser = Depends(get_current_user)) -> dict[str, Any]:
 @router.get("/api/app-users")
 def list_app_users(
     auth: AuthService = Depends(get_auth_service),
-    _user: AppUser = Depends(get_current_user),
+    _admin: AppUser = Depends(require_role("admin")),
 ) -> dict[str, list[dict[str, Any]]]:
     users = auth.list_users()
     return {"users": [UserOut.from_user(u).model_dump() for u in users]}
@@ -112,12 +116,13 @@ def list_app_users(
 def create_app_user(
     body: CreateUserRequest,
     auth: AuthService = Depends(get_auth_service),
-    _user: AppUser = Depends(get_current_user),
+    _admin: AppUser = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     try:
         created = auth.create_user(
             body.email,
             body.password,
+            role=body.role,
             display_name=body.display_name,
             crm_user_external_id=body.crm_user_external_id,
         )
@@ -131,7 +136,7 @@ def update_app_user(
     user_id: int,
     body: UpdateUserRequest,
     auth: AuthService = Depends(get_auth_service),
-    current: AppUser = Depends(get_current_user),
+    current: AppUser = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     target = auth.get_user(user_id)
     if target is None:
@@ -141,11 +146,17 @@ def update_app_user(
             status_code=400,
             detail={"code": "SELF_DEACTIVATE", "message": "Нельзя деактивировать себя"},
         )
+    if body.role is not None and body.role != "admin" and target.id == current.id:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "SELF_DEMOTE", "message": "Нельзя снять роль администратора у себя"},
+        )
     try:
         updated = auth.update_user(
             target,
             display_name=body.display_name,
             password=body.password,
+            role=body.role,
             is_active=body.is_active,
         )
     except ValueError as exc:

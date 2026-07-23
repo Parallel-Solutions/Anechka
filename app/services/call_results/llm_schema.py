@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 PROMPT_VERSION = "3"
 SCHEMA_VERSION = "2"
-CLASSIFIER_VERSION = "2"
+CLASSIFIER_VERSION = "3"
 PLANNER_VERSION = "2"
 
 PrimaryOutcome = Literal[

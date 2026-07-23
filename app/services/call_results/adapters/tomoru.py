@@ -50,6 +50,10 @@ class TomoruCallResultAdapter:
                 mapping["technical_result"] = h
             elif nh == "attempts":
                 mapping["attempts"] = h
+            elif nh in ("campaign_name", "campaign", "campaign_title", "название_кампании", "кампания"):
+                mapping["campaign_name"] = h
+            elif nh == "campaign_id":
+                mapping["campaign_id"] = h
             elif nh == "last_attempt_at":
                 mapping["called_at"] = h
         return mapping
@@ -108,6 +112,8 @@ class TomoruCallResultAdapter:
             "call_result": technical_result,
             "attempts": self._parse_attempts(flat.get("attempts")),
             "called_at": flat.get("called_at"),
+            "campaign_id": str(flat.get("campaign_id") or "").strip() or None,
+            "campaign_name": str(flat.get("campaign_name") or "").strip() or None,
             "scenario_events": scenario_events,
             "scenario_answers": {},
             "content_text": content_text,

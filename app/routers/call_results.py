@@ -42,6 +42,7 @@ from app.schemas_call_results import (
     ManualResolveOut,
     ManualResolveRequest,
     MessageResponse,
+    RetryQueueMaterializeRequest,
     RowLlmDebugOut,
     RowListOut,
     RowOut,
@@ -53,6 +54,7 @@ from app.services.call_results.classification_prompt import CallResultClassifica
 from app.services.call_results.llm_input_builder import LlmInputBuilder
 from app.services.call_results.llm_schema import SCHEMA_VERSION, is_pure_no_answer
 from app.services.call_results.call_attempt_aggregator import CallAttemptAggregator
+from app.services.call_results.business_groups import count_business_groups, get_business_group
 from app.services.call_results.export_service import CallResultExportService
 from app.services.call_results.format_detector import FormatDetector
 from app.services.call_results.job_service import CallResultJobService
@@ -198,6 +200,7 @@ def _row_list_out(
         row,
         contact_creation_allowed=contact_creation_allowed,
     )
+    business_group, business_group_label = get_business_group(row)
     manual_review_pending = is_pending_manual_review_row(
         row,
         contact_creation_allowed=contact_creation_allowed,
@@ -238,6 +241,8 @@ def _row_list_out(
         merge_conflict_reason=row.merge_conflict_reason,
         business_signals=row.business_signals,
         primary_outcome=row.primary_outcome,
+        business_group=business_group,
+        business_group_label=business_group_label,
         needs_manual_review=row.needs_manual_review,
         manual_review_reason=row.manual_review_reason,
         execution_status=row.execution_status,
@@ -330,10 +335,11 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
             return None
         return user_map.get(label.assigned_by_id)
 
-    service_user_id = int(settings.bitrix_service_user_id or 0)
-
-    def task_responsible_user_id(_deal_id: int | None) -> int | None:
-        return service_user_id if service_user_id > 0 else None
+    def task_responsible_user_id(deal_id: int | None) -> int | None:
+        if not deal_id:
+            return None
+        label = deal_map.get(deal_id)
+        return int(label.assigned_by_id) if label and label.assigned_by_id else None
 
     by_method: dict[str, list[ActionOut]] = {}
     row_by_id = {r.id: r for r in rows}
@@ -442,6 +448,8 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         if rf == "manual_call" or ud == "manual_call":
             manual_call_inclusive += 1
 
+    business_group_counts = count_business_groups(rows)
+
     summary = ImportSummaryOut(
         total_rows=imp.total_rows or len(rows),
         unique_phones=unique_phones,
@@ -495,11 +503,13 @@ def _build_detail(db: Session, imp, portal_id: str) -> ImportDetailOut:
         primary_new_comments=primary_counts["new_comments"],
         filter_counts=filter_counts,
         manual_call_inclusive=manual_call_inclusive,
+        business_group_counts=business_group_counts,
     )
 
     return ImportDetailOut(
         id=imp.id,
         original_filename=imp.original_filename,
+        campaign_name=imp.campaign_name,
         status=imp.status,
         source_format=imp.source_format,
         batch_id=imp.batch_id,
@@ -545,6 +555,7 @@ def _live_processing_summary(imp, repo: CallResultRepository) -> ImportSummaryOu
         llm_cached=sum(1 for r in llm_rows if r.llm_provider == "cache"),
         llm_not_required=sum(1 for r in rows if not r.llm_required or r.llm_status == "not_required"),
         low_confidence=imp.llm_rows_low_confidence,
+        business_group_counts=count_business_groups(rows),
         execute_status=imp.execute_status,
     )
 
@@ -565,11 +576,13 @@ def _build_status(imp, repo: CallResultRepository) -> ImportStatusOut:
             llm_cached=imp.llm_rows_cached,
             llm_not_required=imp.llm_rows_skipped,
             low_confidence=imp.llm_rows_low_confidence,
+            business_group_counts=count_business_groups(repo.list_rows(imp.id)),
             execute_status=imp.execute_status,
         )
     return ImportStatusOut(
         id=imp.id,
         original_filename=imp.original_filename,
+        campaign_name=imp.campaign_name,
         status=imp.status,
         error_message=imp.error_message,
         source_format=imp.source_format,
@@ -1229,6 +1242,27 @@ def execute_status(
     )
 
 
+@router.post("/api/call-results/imports/{import_id}/retry-queue/materialize")
+def materialize_retry_queue(
+    import_id: int,
+    body: RetryQueueMaterializeRequest,
+    db: Session = Depends(get_session),
+):
+    """Create local retry rows without sending anything to Bitrix24 or Tomoru."""
+
+    portal_id, repo = _portal_repo(db)
+    if repo.get_import(import_id) is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    from app.services.call_results.retry_queue_materializer import RetryQueueMaterializer
+
+    report = RetryQueueMaterializer(db, portal_id).materialize_import(
+        import_id,
+        row_ids=body.row_ids,
+    )
+    db.commit()
+    return report.as_dict()
+
+
 @router.get("/api/call-results/retry-queue")
 def list_retry_queue(import_id: int | None = None, status: str | None = None, db: Session = Depends(get_session)):
     portal_id, _ = _portal_repo(db)
@@ -1238,6 +1272,50 @@ def list_retry_queue(import_id: int | None = None, status: str | None = None, db
     return gw.export_rows(entries)
 
 
+@router.get("/api/call-results/retry-queue/tomoru-preview")
+def preview_tomoru_retry_campaigns(
+    import_id: int | None = None,
+    db: Session = Depends(get_session),
+):
+    settings = get_app_settings(db)
+    portal_id, _ = _portal_repo(db)
+    from app.services.call_results.retry_queue_gateway import RetryQueueGateway
+    from app.services.call_results.tomoru_retry_campaign import TomoruRetryCampaignPlanner
+
+    entries = RetryQueueGateway(db, portal_id).list_entries(import_id=import_id, limit=None)
+    drafts = TomoruRetryCampaignPlanner(settings.tomoru_default_local_call_time).plan(entries)
+    return {
+        "mode": "dry_run",
+        "external_calls": False,
+        "default_local_call_time": settings.tomoru_default_local_call_time,
+        "campaign_count": len(drafts),
+        "queue_entry_count": sum(len(draft.contacts) for draft in drafts),
+        "campaigns": [draft.as_dict() for draft in drafts],
+    }
+
+
+@router.get("/api/call-results/retry-queue/tomoru-dry-run.zip")
+def export_tomoru_retry_dry_run_zip(
+    import_id: int | None = None,
+    db: Session = Depends(get_session),
+):
+    settings = get_app_settings(db)
+    portal_id, _ = _portal_repo(db)
+    from app.services.call_results.retry_queue_gateway import RetryQueueGateway
+    from app.services.call_results.tomoru_retry_campaign import TomoruRetryCampaignPlanner
+    from app.services.call_results.tomoru_retry_export import build_tomoru_retry_zip
+
+    entries = RetryQueueGateway(db, portal_id).list_entries(import_id=import_id, limit=None)
+    drafts = TomoruRetryCampaignPlanner(settings.tomoru_default_local_call_time).plan(entries)
+    content = build_tomoru_retry_zip(drafts)
+    filename = f"tomoru_retry_dry_run_{import_id}.zip" if import_id else "tomoru_retry_dry_run.zip"
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/api/call-results/retry-queue/export.csv")
 def export_retry_queue_csv(import_id: int | None = None, db: Session = Depends(get_session)):
     import csv
@@ -1245,13 +1323,18 @@ def export_retry_queue_csv(import_id: int | None = None, db: Session = Depends(g
     portal_id, _ = _portal_repo(db)
     from app.services.call_results.retry_queue_gateway import RetryQueueGateway
     gw = RetryQueueGateway(db, portal_id)
-    rows = gw.export_rows(gw.list_entries(import_id=import_id))
+    rows = gw.export_rows(gw.list_entries(import_id=import_id, limit=None))
     buf = io.StringIO()
     if rows:
         writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    return Response(content=buf.getvalue(), media_type="text/csv; charset=utf-8")
+    filename = f"retry_queue_{import_id}.csv" if import_id is not None else "retry_queue.csv"
+    return Response(
+        content="\ufeff" + buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/api/call-results/contact-search")
@@ -1319,5 +1402,11 @@ def call_results_diagnostics(db: Session = Depends(get_session)):
         "contact_marker_error": marker.error,
         "contact_marker_warning": marker.warning,
         "retry_queue_available": True,
+        "tomoru_automation_mode": "events_live" if settings.tomoru_events_enabled else "events_dry_run",
+        "tomoru_external_calls_enabled": settings.tomoru_events_enabled,
+        "tomoru_bot_id_configured": bool(settings.tomoru_bot_id),
+        "tomoru_public_base_url_configured": bool(settings.tomoru_public_base_url),
+        "tomoru_webhook_secret_configured": bool(settings.tomoru_webhook_secret),
+        "tomoru_default_local_call_time": settings.tomoru_default_local_call_time,
         "contact_search_provider": settings.contact_search_provider,
     }

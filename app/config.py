@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     call_result_planner_version: str = Field(default="2", alias="CALL_RESULT_PLANNER_VERSION")
     call_result_prompt_version: str = Field(default="1", alias="CALL_RESULT_PROMPT_VERSION")
     call_result_schema_version: str = Field(default="1", alias="CALL_RESULT_SCHEMA_VERSION")
-    call_result_classifier_version: str = Field(default="2", alias="CALL_RESULT_CLASSIFIER_VERSION")
+    call_result_classifier_version: str = Field(default="3", alias="CALL_RESULT_CLASSIFIER_VERSION")
 
     # --- Call results Bitrix execution ---
     call_results_bitrix_execution_enabled: bool = Field(
@@ -119,6 +119,21 @@ class Settings(BaseSettings):
     bitrix_call_source_field_value: str = Field(default="", alias="BITRIX_CALL_SOURCE_FIELD_VALUE")
     positive_activity_default_deadline: str = Field(default="24h", alias="POSITIVE_ACTIVITY_DEFAULT_DEADLINE")
     call_results_timezone: str = Field(default="Europe/Moscow", alias="CALL_RESULTS_TIMEZONE")
+    tomoru_default_local_call_time: str = Field(
+        default="10:00", alias="TOMORU_DEFAULT_LOCAL_CALL_TIME"
+    )
+    tomoru_events_enabled: bool = Field(default=False, alias="TOMORU_EVENTS_ENABLED")
+    tomoru_bot_id: str = Field(default="", alias="TOMORU_BOT_ID")
+    tomoru_event_name: str = Field(default="coldCall", alias="TOMORU_EVENT_NAME")
+    tomoru_public_base_url: str = Field(default="", alias="TOMORU_PUBLIC_BASE_URL")
+    tomoru_webhook_secret: str = Field(default="", alias="TOMORU_WEBHOOK_SECRET")
+    tomoru_callback_allowed_hosts: str = Field(
+        default="europe-west1-tomoru-2bb77.cloudfunctions.net,api.tomoru.ru",
+        alias="TOMORU_CALLBACK_ALLOWED_HOSTS",
+    )
+    tomoru_http_timeout_seconds: float = Field(
+        default=10.0, alias="TOMORU_HTTP_TIMEOUT_SECONDS"
+    )
     call_results_max_execution_retries: int = Field(default=3, alias="CALL_RESULTS_MAX_EXECUTION_RETRIES")
     contact_search_provider: str = Field(default="fake", alias="CONTACT_SEARCH_PROVIDER")
     contact_search_auto_confirm_threshold: float = Field(

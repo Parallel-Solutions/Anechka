@@ -141,6 +141,7 @@ class AuthService:
         *,
         display_name: str | None = None,
         password: str | None = None,
+        role: str | None = None,
         is_active: bool | None = None,
     ) -> AppUser:
         if display_name is not None:
@@ -149,6 +150,10 @@ class AuthService:
             if len(password) < 6:
                 raise ValueError("Пароль должен быть не короче 6 символов")
             user.password_hash = hash_password(password)
+        if role is not None:
+            if role not in APP_ROLES:
+                raise ValueError(f"Unknown role: {role}")
+            user.role = role
         if is_active is not None:
             user.is_active = is_active
         user.updated_at = utcnow()

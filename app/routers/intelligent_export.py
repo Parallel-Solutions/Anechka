@@ -19,6 +19,7 @@ from app.dependencies import (
     get_current_user,
     get_session,
     get_settings_dep,
+    require_role,
 )
 from app.models import AppUser, ExportJob
 from app.models.intelligent_export import MEMORY_KINDS, MEMORY_SCOPES
@@ -928,7 +929,7 @@ def delete_memory(
 def get_audit(
     db: Session = Depends(get_session),
     settings: Settings = Depends(get_settings_dep),
-    user: AppUser = Depends(get_current_user),
+    _admin: AppUser = Depends(require_role("admin")),
 ):
     entries = list_audit(db, resolve_portal_id(settings))
     return {

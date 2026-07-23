@@ -19,6 +19,7 @@ from app.models import ENTITY_DEAL, ENTITY_LEAD, CrmContact, CrmEntity
 from app.repositories.contact_repository import ContactRepository
 from app.repositories.crm_repository import CrmRepository
 from app.services.bitrix_client import BitrixClient
+from app.services.call_results.deal_timezone_resolver import DealTimezoneResolver
 from app.services.excel_service import ExcelService, make_export_date
 from app.services.export_plan.payload_keys import payload_lookup
 from app.services.export_service import ExportStatistics
@@ -40,6 +41,7 @@ from app.services.tomoru_contact_preferences import (
 )
 from app.services.phone_service import extract_phones_from_multifield, normalize_phone
 from app.services.security_service import safe_filename, unique_filepath
+from app.services.timezone_tomoru_export import write_timezone_zip
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ class LprReportRow:
     region: str
     reason: str
     contact_id: int | None = None
+    timezone: str = "Europe/Moscow"
 
 
 def _date_range_bounds(
@@ -194,6 +197,8 @@ class LprTomoruService:
         self.phones: list[str] = []
         self.last_matched_total: int = 0
         self.last_truncated: bool = False
+        self.group_by_timezone: bool = False
+        self.local_call_time: str = "10:00"
 
     def pop_report_rows(self) -> list[LprReportRow]:
         rows = self.report_rows
@@ -221,6 +226,8 @@ class LprTomoruService:
         region_id = params.get("region_id")
         entity_type = params.get("entity_type")
         self._reset_export_stats()
+        self.group_by_timezone = bool(params.get("group_by_timezone", False))
+        self.local_call_time = str(params.get("local_call_time") or "10:00")
         if region_id and not entity_type:
             return self._run_bitrix_region_export(params)
         entity_type = str(entity_type or "deal").lower()
@@ -416,6 +423,14 @@ class LprTomoruService:
                 self.stats.errors += 1
                 self._log(f"Ошибка сделки {deal_id}: {exc}")
                 logger.exception("LPR deal processing error %s", deal_id)
+
+        timezone_resolver = DealTimezoneResolver(self.db, self.portal_id)
+        timezone_by_deal = {
+            int(deal.entity_id): timezone_resolver.resolve_for_deal(int(deal.id)).timezone
+            for deal in deals
+        }
+        for report_row in report_rows:
+            report_row.timezone = timezone_by_deal.get(report_row.deal_id, "Europe/Moscow")
 
         self._check_cancel()
         self._progress(len(deals), len(deals), "Формирование CSV")
@@ -703,10 +718,18 @@ class LprTomoruService:
         if not report_rows:
             self._log("ЛПР с телефонами не найдены — формируется пустой файл")
 
-        filename = safe_filename("lpr_tomoru", base_label or "export", ext="csv")
         export_dir = get_export_dir(self.settings)
-        filepath = unique_filepath(export_dir, filename)
-        self.excel.write_tomoru_numbers_csv(self.phones, filepath)
+        if self.group_by_timezone:
+            filepath = write_timezone_zip(
+                report_rows,
+                export_dir,
+                base_label,
+                local_call_time=self.local_call_time,
+            )
+        else:
+            filename = safe_filename("lpr_tomoru", base_label or "export", ext="csv")
+            filepath = unique_filepath(export_dir, filename)
+            self.excel.write_tomoru_numbers_csv(self.phones, filepath)
         export_date = make_export_date()
         info: dict[str, Any] = {
             "Режим": "region_lpr",

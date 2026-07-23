@@ -22,7 +22,7 @@ def test_stage_change_forbidden():
     assert v.status == "invalid"
 
 
-def test_refusal_no_retry():
+def test_refusal_schedules_only_comment_and_delayed_retry():
     row = CallResultImportRow(
         id=1, import_id=1, source_row_number=2, raw_data={}, normalized_data={},
         match_status="matched", llm_status="not_required", llm_required=False,
@@ -36,7 +36,11 @@ def test_refusal_no_retry():
         signals=CallResultSignals(explicit_refusal=True, confidence=0.9),
         requires_manual=False,
     )
-    assert all(a.operation_type != "retry_queue_add" for a in actions)
+    assert [a.operation_type for a in actions] == [
+        "bitrix_add_comment",
+        "retry_queue_add",
+    ]
+    assert actions[1].payload["reason"] == "refusal_followup"
 
 
 def test_manual_review_planner_blocks():

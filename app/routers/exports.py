@@ -7,7 +7,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -17,7 +17,7 @@ from app.dependencies import get_app_settings
 from app.exceptions import ExportValidationError
 from app.services.auth_service import resolve_portal_id
 from app.services.lpr_service import load_lpr_config
-from app.services.lpr_tomoru_service import LprTomoruService
+from app.services.lpr_tomoru_service import LprTomoruService, _date_range_bounds
 from app.models import ExportJob
 from app.schemas import (
     CategoryFullExportRequest,
@@ -34,6 +34,8 @@ from app.schemas import (
     TomoruExportRequest,
 )
 from app.services.export_phone_registry import ExportPhoneRegistry
+from app.services.external_phone_import import build_tomoru_csv, extract_external_phones
+from app.services.company_tomoru_export import build_companies_without_deals_export
 from app.services.phone_service import normalize_phone
 from app.services.bitrix_client import BitrixClient
 from app.services.export_deals_service import ExportDealsService
@@ -45,6 +47,7 @@ from app.services.security_service import validate_download_path
 
 router = APIRouter(tags=["exports"])
 job_service = JobService()
+EXTERNAL_PHONE_PREVIEW_LIMIT = 100
 
 
 def _job_to_response(job: ExportJob) -> ExportJobResponse:
@@ -131,6 +134,91 @@ def create_tomoru_export(body: TomoruExportRequest, db: Session = Depends(get_db
     return MessageResponse(message="Задача создана", job_id=job.id)
 
 
+@router.post("/exports/tomoru/external/preview")
+async def preview_external_tomoru_export(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    filename = file.filename or "phones.csv"
+    extension = Path(filename).suffix.lower()
+    if extension not in {".csv", ".xlsx"}:
+        raise HTTPException(status_code=400, detail="Поддерживаются только CSV и XLSX")
+    content = await file.read(settings.call_result_max_file_bytes + 1)
+    if len(content) > settings.call_result_max_file_bytes:
+        raise HTTPException(status_code=413, detail="Файл превышает допустимый размер")
+    try:
+        result = extract_external_phones(content, filename)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    preview = result.phones[:EXTERNAL_PHONE_PREVIEW_LIMIT]
+    return {
+        "filename": filename,
+        "rows_total": result.rows_total,
+        "rows_with_phone": result.rows_with_phone,
+        "invalid_rows": result.invalid_rows,
+        "phones_total": len(result.phones),
+        "phones": preview,
+        "preview_truncated": len(preview) < len(result.phones),
+    }
+
+@router.post("/exports/tomoru/external/download")
+async def download_external_tomoru_export(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    filename = file.filename or "phones.csv"
+    extension = Path(filename).suffix.lower()
+    if extension not in {".csv", ".xlsx"}:
+        raise HTTPException(status_code=400, detail="Поддерживаются только CSV и XLSX")
+    content = await file.read(settings.call_result_max_file_bytes + 1)
+    if len(content) > settings.call_result_max_file_bytes:
+        raise HTTPException(status_code=413, detail="Файл превышает допустимый размер")
+    try:
+        result = extract_external_phones(content, filename)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=build_tomoru_csv(result.phones),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="tomoru_external_phones.csv"',
+            "X-Import-Rows-Total": str(result.rows_total),
+            "X-Import-Rows-With-Phone": str(result.rows_with_phone),
+            "X-Import-Invalid-Rows": str(result.invalid_rows),
+            "X-Export-Phones": str(len(result.phones)),
+        },
+    )
+
+
+@router.get("/exports/tomoru/companies-without-deals/download")
+def download_companies_without_deals_tomoru_export(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    start, end = _date_range_bounds(date_from, date_to)
+    result = build_companies_without_deals_export(
+        db,
+        resolve_portal_id(settings),
+        date_from=start,
+        date_to=end,
+    )
+    return Response(
+        content=build_tomoru_csv(result.phones),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="tomoru_companies_without_deals.csv"',
+            "X-Companies-Total": str(result.companies_total),
+            "X-Companies-Without-Deals": str(result.companies_without_deals),
+            "X-Companies-With-Phones": str(result.companies_with_phones),
+            "X-Export-Phones": str(len(result.phones)),
+        },
+    )
+
+
 @router.post("/exports/tomoru/download")
 def download_tomoru_export(body: TomoruExportRequest, db: Session = Depends(get_db)):
     settings = get_app_settings(db)
@@ -156,7 +244,7 @@ def download_tomoru_export(body: TomoruExportRequest, db: Session = Depends(get_
     return FileResponse(
         path,
         filename=path.name,
-        media_type="text/csv",
+        media_type="application/zip" if path.suffix.lower() == ".zip" else "text/csv",
         headers={
             "X-Export-Matched-Total": str(lpr_service.last_matched_total),
         },

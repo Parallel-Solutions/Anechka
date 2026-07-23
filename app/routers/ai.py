@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import BASE_DIR, get_export_dir
 from app.database import get_db
-from app.dependencies import get_app_settings
+from app.dependencies import get_app_settings, require_role
 from app.exceptions import AppError
 from app.schemas import (
     AIChatRequest,
@@ -102,16 +102,31 @@ def list_ai_prompts(db: Session = Depends(get_db)):
     return AiPromptService().list_prompts(db)
 
 
-@router.post("/api/ai/prompts", response_model=AIPromptItem)
-def create_ai_prompt(body: AIPromptCreate, db: Session = Depends(get_db)):
+@router.post(
+    "/api/ai/prompts",
+    response_model=AIPromptItem,
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_ai_prompt(
+    body: AIPromptCreate,
+    db: Session = Depends(get_db),
+):
     try:
         return AiPromptService().create_prompt(db, body.title, body.prompt)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.put("/api/ai/prompts/{prompt_id}", response_model=AIPromptItem)
-def update_ai_prompt(prompt_id: int, body: AIPromptUpdate, db: Session = Depends(get_db)):
+@router.put(
+    "/api/ai/prompts/{prompt_id}",
+    response_model=AIPromptItem,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_ai_prompt(
+    prompt_id: int,
+    body: AIPromptUpdate,
+    db: Session = Depends(get_db),
+):
     try:
         return AiPromptService().update_prompt(db, prompt_id, body.title, body.prompt)
     except LookupError as exc:
@@ -120,8 +135,14 @@ def update_ai_prompt(prompt_id: int, body: AIPromptUpdate, db: Session = Depends
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/api/ai/prompts/{prompt_id}")
-def delete_ai_prompt(prompt_id: int, db: Session = Depends(get_db)):
+@router.delete(
+    "/api/ai/prompts/{prompt_id}",
+    dependencies=[Depends(require_role("admin"))],
+)
+def delete_ai_prompt(
+    prompt_id: int,
+    db: Session = Depends(get_db),
+):
     try:
         AiPromptService().delete_prompt(db, prompt_id)
     except LookupError as exc:
@@ -129,8 +150,14 @@ def delete_ai_prompt(prompt_id: int, db: Session = Depends(get_db)):
     return {"message": "Промпт удалён"}
 
 
-@router.get("/api/ai/lpr-config", response_model=LprConfigData)
-def get_lpr_config(db: Session = Depends(get_db)):
+@router.get(
+    "/api/ai/lpr-config",
+    response_model=LprConfigData,
+    dependencies=[Depends(require_role("admin"))],
+)
+def get_lpr_config(
+    db: Session = Depends(get_db),
+):
     config = load_lpr_config(db)
     return LprConfigData(
         keywords=config.keywords,
@@ -139,8 +166,15 @@ def get_lpr_config(db: Session = Depends(get_db)):
     )
 
 
-@router.put("/api/ai/lpr-config", response_model=LprConfigData)
-def update_lpr_config(body: LprConfigData, db: Session = Depends(get_db)):
+@router.put(
+    "/api/ai/lpr-config",
+    response_model=LprConfigData,
+    dependencies=[Depends(require_role("admin"))],
+)
+def update_lpr_config(
+    body: LprConfigData,
+    db: Session = Depends(get_db),
+):
     config = save_lpr_config(db, body.keywords, body.fields, body.stopwords)
     return LprConfigData(
         keywords=config.keywords,

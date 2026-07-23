@@ -59,12 +59,14 @@ def test_positive_task_without_deal_assigned():
     assert [a.method for a in actions] == ["tasks.task.add"]
 
 
-def test_refusal_only_comment():
+def test_refusal_comment_and_delayed_retry():
     actions = _plan(CallResultSignals(explicit_refusal=True, summary="Не нужно", confidence=0.9))
     methods = [a.method for a in actions]
-    assert methods == ["crm.timeline.comment.add"]
+    assert methods == ["crm.timeline.comment.add", "retry_queue.add"]
     assert "tasks.task.add" not in methods
-    assert "retry_queue.add" not in methods
+    retry = actions[1]
+    assert retry.operation_type == "retry_queue_add"
+    assert retry.payload["reason"] == "refusal_followup"
 
 
 def test_callback_later_only_retry():

@@ -33,15 +33,18 @@ def test_create_user_with_bitrix_id(auth_client):
             "email": "bitrix@example.com",
             "password": "secret12",
             "display_name": "Bitrix User",
+            "role": "analyst",
             "crm_user_external_id": 42,
         },
     )
     assert resp.status_code == 201
     assert resp.json()["user"]["crm_user_external_id"] == 42
+    assert resp.json()["user"]["role"] == "analyst"
 
     listed = auth_client.get("/api/app-users").json()["users"]
     match = next(u for u in listed if u["email"] == "bitrix@example.com")
     assert match["crm_user_external_id"] == 42
+    assert match["role"] == "analyst"
 
 
 def test_cannot_deactivate_self(auth_client, db_session):
@@ -53,13 +56,22 @@ def test_cannot_deactivate_self(auth_client, db_session):
     assert resp.json()["detail"]["code"] == "SELF_DEACTIVATE"
 
 
+def test_cannot_demote_self(auth_client):
+    me = auth_client.get("/auth/me").json()["user"]
+    assert me["role"] == "admin"
+    resp = auth_client.patch(f"/api/app-users/{me['id']}", json={"role": "analyst"})
+    assert resp.status_code == 400
+    assert resp.json()["detail"]["code"] == "SELF_DEMOTE"
+
+
 def test_reset_password(auth_client, db_session):
     from app.config import get_settings
 
     auth = AuthService(get_settings(), db_session)
     other = auth.create_user("reset@example.com", "oldpass1")
 
-    resp = auth_client.patch(f"/api/app-users/{other.id}", json={"password": "newpass1"})
+    resp = auth_client.patch(f"/api/app-users/{other.id}", json={"password": "newpass1", "role": "analyst"})
     assert resp.status_code == 200
+    assert resp.json()["user"]["role"] == "analyst"
     db_session.expire_all()
     assert AuthService(get_settings(), db_session).authenticate("reset@example.com", "newpass1") is not None

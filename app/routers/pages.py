@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import BASE_DIR, _env_overrides
 from app.database import get_db
-from app.dependencies import get_app_settings
+from app.dependencies import get_app_settings, require_role
 from app.models import ExportJob
 from app.repositories.contact_repository import ContactRepository
 from app.repositories.crm_repository import CrmRepository
@@ -34,7 +34,11 @@ def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {"next_url": next_url})
 
 
-@router.get("/settings/users", response_class=HTMLResponse)
+@router.get(
+    "/settings/users",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def settings_users_page(request: Request):
     return templates.TemplateResponse(request, "settings_users.html", {})
 
@@ -113,7 +117,11 @@ def legacy_export_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/settings", response_class=HTMLResponse)
+@router.get(
+    "/settings",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def settings_page(request: Request, db: Session = Depends(get_db)):
     settings = get_app_settings(db)
     lpr_config = load_lpr_config(db)
@@ -143,7 +151,11 @@ def exports_list(request: Request, db: Session = Depends(get_db)):
 ENTITY_LABELS = {1: "Лиды", 2: "Сделки", 3: "Контакты", 4: "Компании"}
 
 
-@router.get("/bitrix-import", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_import_dashboard(request: Request, db: Session = Depends(get_db)):
     settings = get_app_settings(db)
     portal = portal_id_from_webhook(settings.bitrix_webhook_url)
@@ -199,7 +211,11 @@ def bitrix_import_dashboard(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/bitrix-import/entities/{entity_type_id}", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import/entities/{entity_type_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_entities_list(
     request: Request,
     entity_type_id: int,
@@ -228,7 +244,11 @@ def bitrix_entities_list(
     )
 
 
-@router.get("/bitrix-import/entities/{entity_type_id}/{entity_id}", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import/entities/{entity_type_id}/{entity_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_entity_detail(
     request: Request,
     entity_type_id: int,
@@ -267,7 +287,11 @@ def bitrix_entity_detail(
     )
 
 
-@router.get("/bitrix-import/fields", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import/fields",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_fields_page(request: Request, db: Session = Depends(get_db)):
     from app.models import CrmFieldDefinition
     from sqlalchemy import select
@@ -300,7 +324,11 @@ def bitrix_fields_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "bitrix_fields.html", {"fields": field_data})
 
 
-@router.get("/bitrix-import/dictionaries", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import/dictionaries",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_dictionaries_page(request: Request, db: Session = Depends(get_db)):
     from app.models import CrmDictionary, CrmDictionaryEntry
     from sqlalchemy import func, select
@@ -319,7 +347,11 @@ def bitrix_dictionaries_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "bitrix_dictionaries.html", {"dictionaries": result})
 
 
-@router.get("/bitrix-import/dictionaries/{dictionary_id}", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import/dictionaries/{dictionary_id}",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_dictionary_detail(
     request: Request,
     dictionary_id: int,
@@ -356,7 +388,11 @@ def bitrix_dictionary_detail(
     )
 
 
-@router.get("/bitrix-import/runs", response_class=HTMLResponse)
+@router.get(
+    "/bitrix-import/runs",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_role("admin"))],
+)
 def bitrix_runs_page(request: Request, db: Session = Depends(get_db)):
     from app.models import SyncRun
     from sqlalchemy import select

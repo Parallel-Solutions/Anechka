@@ -110,6 +110,7 @@ RETRY_QUEUE_REASONS = (
     "callback_later",
     "no_answer",
     "hangup_replacement_contact",
+    "refusal_followup",
 )
 CONTACT_SEARCH_STATUSES = (
     "contact_search_required",
@@ -158,6 +159,7 @@ class CallResultImport(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     portal_id: Mapped[str] = mapped_column(String(255), index=True)
     original_filename: Mapped[str] = mapped_column(String(512))
+    campaign_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     storage_key: Mapped[str] = mapped_column(String(1024))
     file_sha256: Mapped[str] = mapped_column(String(64), index=True)
     file_size: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -174,7 +176,7 @@ class CallResultImport(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     parser_version: Mapped[str] = mapped_column(String(16), default="1")
     planner_version: Mapped[str] = mapped_column(String(16), default="2")
-    classifier_version: Mapped[str] = mapped_column(String(16), default="2")
+    classifier_version: Mapped[str] = mapped_column(String(16), default="3")
     duplicate_of_import_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_format: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
@@ -328,6 +330,7 @@ class CallRetryQueueEntry(Base):
     deal_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     contact_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     phone_normalized: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    phone_extension: Mapped[str | None] = mapped_column(String(32), nullable=True)
     callback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     callback_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     reason: Mapped[str] = mapped_column(String(64))
@@ -338,6 +341,8 @@ class CallRetryQueueEntry(Base):
     search_required: Mapped[bool] = mapped_column(Boolean, default=False)
     idempotency_key: Mapped[str] = mapped_column(String(512))
     timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatched_campaign_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

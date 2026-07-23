@@ -70,6 +70,10 @@ class ExecuteRequest(BaseModel):
     retry_failed_only: bool = False
 
 
+class RetryQueueMaterializeRequest(BaseModel):
+    row_ids: list[int] | None = None
+
+
 class ExecuteLogItemOut(BaseModel):
     id: int
     import_row_id: int
@@ -205,6 +209,8 @@ class RowListOut(BaseModel):
     merge_conflict_reason: str | None = None
     business_signals: dict | None = None
     primary_outcome: str | None = None
+    business_group: str = "other"
+    business_group_label: str = "ИНОЕ"
     needs_manual_review: bool = False
     manual_review_reason: str | None = None
     execution_status: str | None = None
@@ -316,6 +322,7 @@ class ImportSummaryOut(BaseModel):
     primary_new_comments: int = 0
     filter_counts: dict[str, int] = Field(default_factory=dict)
     manual_call_inclusive: int = 0
+    business_group_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class AttemptHistoryOut(BaseModel):
@@ -328,6 +335,7 @@ class AttemptHistoryOut(BaseModel):
 class ImportStatusOut(BaseModel):
     id: int
     original_filename: str
+    campaign_name: str | None = None
     status: str
     error_message: str | None = None
     source_format: str | None = None
@@ -341,6 +349,7 @@ class ImportStatusOut(BaseModel):
 class ImportDetailOut(BaseModel):
     id: int
     original_filename: str
+    campaign_name: str | None = None
     status: str
     source_format: str | None = None
     batch_id: str | None = None

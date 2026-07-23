@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models import BitrixPreparedAction, CallResultImport, CallResultImportRow
 from app.repositories.call_result_repository import CallResultRepository
+from app.services.call_results.business_groups import count_business_groups, get_business_group
 
 
 def _csv_safe(value: Any) -> str:
@@ -39,6 +40,7 @@ class CallResultExportService:
             "import": {
                 "id": imp.id,
                 "filename": imp.original_filename,
+                "campaign_name": imp.campaign_name,
                 "source_format": imp.source_format,
                 "batch_id": imp.batch_id,
                 "created_at": imp.created_at.isoformat() if imp.created_at else None,
@@ -50,6 +52,7 @@ class CallResultExportService:
                 "tasks": by_method.get("tasks.task.add", 0),
                 "manual_review": imp.review_rows,
                 "skipped": imp.skipped_rows,
+                "business_groups": count_business_groups(rows),
             },
             "operations": [
                 {
@@ -60,6 +63,8 @@ class CallResultExportService:
                     "validation_status": a.validation_status,
                     "is_enabled": a.is_enabled,
                     "source_identity": self._row_identity(rows, a),
+                    "business_group": self._row_business_group(rows, a)[0],
+                    "business_group_label": self._row_business_group(rows, a)[1],
                 }
                 for a in actions
             ],
@@ -71,7 +76,8 @@ class CallResultExportService:
         ws = wb.active
         ws.title = "Review"
         headers = [
-            "Строка", "Телефон", "Категория", "Источник", "Уверенность",
+            "Строка", "Телефон", "Категория", "Код бизнес-группы", "Бизнес-группа",
+            "Источник", "Уверенность",
             "Match", "Сделка", "Причина", "LLM статус", "Skip",
         ]
         ws.append(headers)
@@ -80,6 +86,8 @@ class CallResultExportService:
                 r.source_row_number,
                 r.raw_phone,
                 r.final_category,
+                get_business_group(r)[0],
+                get_business_group(r)[1],
                 r.classification_source,
                 r.llm_confidence,
                 r.match_status,
@@ -100,6 +108,7 @@ class CallResultExportService:
         writer = csv.writer(buf, lineterminator="\r\n")
         writer.writerow([
             "batch_id", "phone", "technical_status", "call_result", "category",
+            "business_group", "business_group_label",
             "deal_id", "responsible", "summary", "next_action", "callback_at",
             "method", "payload", "validation_status", "manual_override", "source_identity",
         ])
@@ -112,6 +121,8 @@ class CallResultExportService:
                 _csv_safe(row.technical_status if row else ""),
                 _csv_safe(row.call_result_display if row else ""),
                 _csv_safe(row.final_category if row else ""),
+                _csv_safe(get_business_group(row)[0] if row else ""),
+                _csv_safe(get_business_group(row)[1] if row else ""),
                 _csv_safe(row.matched_deal_id if row else ""),
                 _csv_safe(""),
                 _csv_safe(ext.get("summary", "")),
@@ -124,6 +135,16 @@ class CallResultExportService:
                 _csv_safe(row.source_identity if row else ""),
             ])
         return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+    @staticmethod
+    def _row_business_group(
+        rows: list[CallResultImportRow],
+        action: BitrixPreparedAction,
+    ) -> tuple[str | None, str | None]:
+        for row in rows:
+            if row.id == action.import_row_id:
+                return get_business_group(row)
+        return None, None
 
     @staticmethod
     def _row_identity(rows: list[CallResultImportRow], action: BitrixPreparedAction) -> str | None:

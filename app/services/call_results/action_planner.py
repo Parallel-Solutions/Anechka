@@ -127,7 +127,19 @@ class BitrixActionPlanner:
                 ),
             )
 
-        if signals.hangup_without_result and signals.active_signal_count() == 1:
+            order = self._append(
+                actions,
+                PlannedAction(
+                    method="retry_queue.add",
+                    action_type="retry_queue_add",
+                    operation_type="retry_queue_add",
+                    payload={"reason": "refusal_followup"},
+                    human_summary="Повторный звонок после отказа — через три месяца",
+                    sort_order=order,
+                ),
+            )
+
+        if signals.hangup_without_result and signals.active_signal_count() == 1:
             order = self._append(
                 actions,
                 PlannedAction(

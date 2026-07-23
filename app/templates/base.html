@@ -8,6 +8,7 @@
     <link href="/static/css/app.css?v=20250706" rel="stylesheet">
 </head>
 <body class="{% block body_class %}{% endblock %}">
+{% set p = request.url.path %}
 <nav class="navbar navbar-expand-lg {% block navbar_class %}navbar-dark bg-primary mb-4{% endblock %}">
     <div class="container">
         <a class="navbar-brand fw-semibold" href="/">Bitrix24 Export</a>
@@ -15,7 +16,9 @@
             <a class="nav-link" href="/tomoru-export">Tomoru</a>
             <a class="nav-link" href="/call-results">Результаты прозвона</a>
             <a class="nav-link" href="/instruction">Инструкция</a>
+            {% if request.state.user and request.state.user.role == 'admin' %}
             <a class="nav-link" href="/settings">Настройки</a>
+            {% endif %}
             {% if request.state.user %}
             <span class="nav-link text-white-50 small">{{ request.state.user.display_name or request.state.user.email }}</span>
             <form method="post" action="/auth/logout" class="d-inline ms-2" id="logout-form">
@@ -26,7 +29,28 @@
     </div>
 </nav>
 <main class="{% block main_class %}container pb-5{% endblock %}">
-    {% set p = request.url.path %}
+    {% if p not in ['/', '/login'] %}
+    {% set back_fallback = '/' %}
+    {% if p.startswith('/call-results/imports/') %}
+        {% set back_fallback = '/call-results' %}
+    {% elif p.startswith('/exports/') %}
+        {% set back_fallback = '/exports' %}
+    {% elif p.startswith('/bitrix-import/dictionaries/') %}
+        {% set back_fallback = '/bitrix-import/dictionaries' %}
+    {% elif p.startswith('/bitrix-import/entities/') %}
+        {% set entity_parts = p.split('/') %}
+        {% set back_fallback = '/bitrix-import/entities/' ~ entity_parts[3] if entity_parts|length > 4 else '/bitrix-import' %}
+    {% elif p.startswith('/bitrix-import/') %}
+        {% set back_fallback = '/bitrix-import' %}
+    {% elif p == '/settings/users' %}
+        {% set back_fallback = '/settings' %}
+    {% endif %}
+    <div class="mb-3">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="app-back-button" data-fallback="{{ back_fallback }}">
+            ← Назад
+        </button>
+    </div>
+    {% endif %}
     {% if p == '/settings' or p.startswith('/exports') or p.startswith('/bitrix-import') or p.startswith('/settings/users') %}
     {% include '_settings_subnav.html' %}
     {% endif %}
@@ -35,6 +59,7 @@
 {% include '_phone_export_history_modal.html' %}
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="/static/js/app.js?v=20250629"></script>
+<script src="/static/js/navigation.js?v=20260721"></script>
 <script>
 document.getElementById('logout-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();

@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.services.call_results.deterministic_pre_classifier import PreClassResult
+from app.services.call_results.deterministic_pre_classifier import (
+    PreClassResult,
+    has_substantive_dialogue,
+)
 from app.services.call_results.scenario_signal_extractor import extract_signals_from_scenario_events
 from app.services.call_results.llm_schema import (
     CallResultLLMResult,
@@ -62,6 +65,7 @@ class SignalMerger:
             match_reason_text = match_reason or pre.reason or "Проблема сопоставления со сделкой"
             if llm is not None and llm_valid:
                 sig = llm.to_signals()
+                self._suppress_false_hangup(sig, normalized_data)
                 self._apply_match_failure_marker(sig, match_status, match_reason)
                 source = "hybrid" if pre.llm_required or pre.category is None else "llm"
                 return self._merged(
@@ -122,6 +126,7 @@ class SignalMerger:
 
         if not llm_valid or substantial_truncation:
             sig = llm.to_signals()
+            self._suppress_false_hangup(sig, normalized_data)
             if sig.active_signal_count() == 0:
                 fallback = self._scenario_fallback(normalized_data)
                 if fallback is not None:
@@ -133,6 +138,7 @@ class SignalMerger:
             return self._merged(sig, pre, llm, source="llm", reason=sig.manual_review_reason, manual=True)
 
         sig = llm.to_signals()
+        self._suppress_false_hangup(sig, normalized_data)
 
         if sig.confidence < confidence_threshold:
             sig.needs_manual_review = True
@@ -187,6 +193,27 @@ class SignalMerger:
             deterministic_category=pre.category,
             skip_bitrix=pre.skip_bitrix,
         )
+
+    @staticmethod
+    def _suppress_false_hangup(
+        sig: CallResultSignals,
+        normalized_data: dict | None,
+    ) -> None:
+        if not has_substantive_dialogue(normalized_data):
+            return
+        if not sig.hangup_without_result and not sig.hangup_during_robocall:
+            return
+
+        sig.hangup_without_result = False
+        sig.hangup_during_robocall = False
+        reasons = dict(sig.signal_reasons)
+        reasons.pop("hangup_without_result", None)
+        reasons.pop("hangup_during_robocall", None)
+        reasons["false_hangup_suppressed"] = "Обнаружен содержательный разговор"
+        sig.signal_reasons = reasons
+        if sig.active_signal_count() == 0:
+            sig.needs_manual_review = True
+            sig.manual_review_reason = "Содержательный разговор без однозначного результата"
 
     @staticmethod
     def _empty_manual(reason: str | None) -> CallResultSignals:
