@@ -16,6 +16,10 @@ from app.services.call_results.tomoru_retry_campaign import (
     TomoruCampaignDraft,
     TomoruRetryCampaignPlanner,
 )
+from app.services.call_results.tomoru_initial_campaign import (
+    TomoruInitialBatchDraft,
+    TomoruInitialCampaignPlanner,
+)
 
 
 class TomoruApiError(RuntimeError):
@@ -42,10 +46,29 @@ class TomoruApiClient:
         return self._request("GET", f"/api/call_batches/{batch_id}")
 
     def create_batch(self, draft: TomoruCampaignDraft) -> dict[str, Any]:
-        csv_bytes = self._build_csv(draft)
-        start_at = draft.scheduled_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        return self._create_uploaded_batch(
+            name=draft.campaign_name,
+            csv_bytes=self._build_csv(draft),
+            scheduled_at=draft.scheduled_at,
+        )
+
+    def create_initial_batch(self, draft: TomoruInitialBatchDraft) -> dict[str, Any]:
+        return self._create_uploaded_batch(
+            name=draft.campaign_name,
+            csv_bytes=self._build_initial_csv(draft),
+            scheduled_at=draft.scheduled_at,
+        )
+
+    def _create_uploaded_batch(
+        self,
+        *,
+        name: str,
+        csv_bytes: bytes,
+        scheduled_at: datetime,
+    ) -> dict[str, Any]:
+        start_at = scheduled_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         data = {
-            "name": draft.campaign_name,
+            "name": name,
             "agent_id": self.settings.tomoru_agent_id,
             "max_retries": str(max(0, self.settings.tomoru_batch_max_retries)),
             "retry_delay_seconds": str(
@@ -59,13 +82,7 @@ class TomoruApiClient:
             "POST",
             "/api/call_batches",
             data=data,
-            files={
-                "csv_file": (
-                    f"{draft.campaign_name}.csv",
-                    csv_bytes,
-                    "text/csv",
-                )
-            },
+            files={"csv_file": (f"{name}.csv", csv_bytes, "text/csv")},
         )
 
     def launch_batch(self, batch_id: str) -> dict[str, Any]:
@@ -122,6 +139,34 @@ class TomoruApiClient:
                     "contact_id": contact.contact_id or "",
                     "callback_text": contact.callback_text or "",
                     "phone_extension": contact.phone_extension or "",
+                }
+            )
+        return output.getvalue().encode("utf-8-sig")
+
+    @classmethod
+    def _build_initial_csv(cls, draft: TomoruInitialBatchDraft) -> bytes:
+        output = io.StringIO(newline="")
+        fieldnames = [
+            "phone_number",
+            "timezone",
+            "deal_id",
+            "contact_id",
+            "fio",
+            "company",
+            "deal_title",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in draft.rows:
+            writer.writerow(
+                {
+                    "phone_number": cls._e164(getattr(row, "phone", "")),
+                    "timezone": draft.timezone,
+                    "deal_id": getattr(row, "deal_id", "") or "",
+                    "contact_id": getattr(row, "contact_id", "") or "",
+                    "fio": getattr(row, "fio", "") or "",
+                    "company": getattr(row, "company", "") or "",
+                    "deal_title": getattr(row, "deal_title", "") or "",
                 }
             )
         return output.getvalue().encode("utf-8-sig")
@@ -237,4 +282,78 @@ class TomoruBatchDispatcher:
                         entry.status = "failed"
                     entry.last_error = error
             report["batches"].append(draft_report)
+        return report
+
+class TomoruInitialBatchDispatcher:
+    """Create initial export batches and only launch behind the global safety flag."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        client: TomoruApiClient | None = None,
+    ):
+        self.settings = settings
+        self.client = client or TomoruApiClient(settings)
+        self.planner = TomoruInitialCampaignPlanner()
+
+    def dispatch(
+        self,
+        rows: list[Any],
+        *,
+        local_call_time: str = "10:00",
+        launch: bool = False,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        drafts = self.planner.plan(rows, local_call_time=local_call_time, now=now)
+        report: dict[str, Any] = {
+            "mode": "live",
+            "external_calls": False,
+            "launch_requested": launch,
+            "prepared_batches": len(drafts),
+            "prepared_contacts": sum(len(draft.rows) for draft in drafts),
+            "created_batches": 0,
+            "launched_batches": 0,
+            "failed_batches": 0,
+            "batches": [],
+        }
+        if not self.settings.tomoru_batch_creation_enabled:
+            report["mode"] = "blocked"
+            report["blocked_reason"] = "TOMORU_BATCH_CREATION_ENABLED=false"
+            return report
+        if not self.settings.tomoru_api_key:
+            report["mode"] = "blocked"
+            report["blocked_reason"] = "TOMORU_API_KEY is not configured"
+            return report
+        if not self.settings.tomoru_agent_id:
+            report["mode"] = "blocked"
+            report["blocked_reason"] = "TOMORU_AGENT_ID is not configured"
+            return report
+        if launch and not self.settings.tomoru_batch_auto_launch_enabled:
+            report["mode"] = "blocked"
+            report["blocked_reason"] = "TOMORU_BATCH_AUTO_LAUNCH_ENABLED=false"
+            return report
+
+        report["external_calls"] = True
+        for draft in drafts:
+            item = draft.as_dict() | {
+                "batch_id": None,
+                "launched": False,
+                "error": None,
+            }
+            try:
+                created = self.client.create_initial_batch(draft)
+                batch_id = str(created.get("id") or "")
+                if not batch_id:
+                    raise TomoruApiError("Tomoru response does not contain batch id")
+                item["batch_id"] = batch_id
+                report["created_batches"] += 1
+                if launch:
+                    self.client.launch_batch(batch_id)
+                    item["launched"] = True
+                    report["launched_batches"] += 1
+            except Exception as exc:
+                item["error"] = str(exc)[:2000]
+                report["failed_batches"] += 1
+            report["batches"].append(item)
         return report

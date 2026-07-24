@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import Settings, get_export_dir
 from app.database import get_db
-from app.dependencies import get_app_settings
+from app.dependencies import get_app_settings, require_role
 from app.exceptions import ExportValidationError
 from app.services.auth_service import resolve_portal_id
 from app.services.lpr_service import load_lpr_config
@@ -44,6 +44,7 @@ from app.services.tomoru_contact_preferences import set_deal as save_tomoru_cont
 from app.services.job_service import JobService
 from app.services.json_export_service import build_json_from_xlsx, write_export_json
 from app.services.security_service import validate_download_path
+from app.services.call_results.tomoru_api import TomoruInitialBatchDispatcher
 
 router = APIRouter(tags=["exports"])
 job_service = JobService()
@@ -249,6 +250,44 @@ def download_tomoru_export(body: TomoruExportRequest, db: Session = Depends(get_
             "X-Export-Matched-Total": str(lpr_service.last_matched_total),
         },
     )
+
+
+@router.post(
+    "/exports/tomoru/campaigns",
+    dependencies=[Depends(require_role("admin"))],
+)
+def create_tomoru_campaigns(
+    body: TomoruExportRequest,
+    db: Session = Depends(get_db),
+):
+    """Create timezone-specific Tomoru campaigns from the current export selection."""
+    settings = get_app_settings(db)
+    _validate_tomoru_export(body, settings)
+    params = body.model_dump(mode="json")
+    params["group_by_timezone"] = False
+    lpr_service = LprTomoruService(
+        settings=settings,
+        cancel_check=lambda: False,
+        lpr_config=load_lpr_config(db),
+        db=db,
+        portal_id=resolve_portal_id(settings),
+    )
+    try:
+        lpr_service.run_lpr_tomoru_export(params)
+    except ExportValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    report = TomoruInitialBatchDispatcher(settings).dispatch(
+        list(lpr_service.report_rows),
+        local_call_time=body.local_call_time,
+        launch=settings.tomoru_batch_auto_launch_enabled,
+    )
+    if report.get("mode") == "blocked":
+        raise HTTPException(
+            status_code=409,
+            detail=report.get("blocked_reason") or "Создание кампаний Tomoru отключено",
+        )
+    return report
 
 
 def _deals_result_to_response(result) -> ExportDealsResponse:

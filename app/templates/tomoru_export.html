@@ -62,8 +62,10 @@
                         <label class="form-check-label" for="group-by-timezone">Разделить по часовым поясам</label>
                         <div class="form-text">Скачается ZIP с отдельным CSV для каждого часового пояса, планом manifest.csv и пошаговой инструкцией README.txt. Каждый файл запускайте в Tomoru в 10:00 местного времени.</div>
                     </div>
-                    <button type="submit" class="btn btn-primary" id="submit-btn">Запустить выгрузку</button>
+                    <button type="submit" class="btn btn-primary" id="submit-btn">Скачать выгрузку</button>
+                    <button type="button" class="btn btn-success ms-2" id="create-campaigns-btn">Создать кампании в Tomoru</button>
                     <span id="form-message" class="ms-3 small text-muted"></span>
+                    <div class="form-text mt-2">Tomoru получит отдельную кампанию для каждого часового пояса с запуском в 10:00 местного времени.</div>
                 </div>
             </div>
         </form>
@@ -179,6 +181,7 @@
     const dateToInput = document.getElementById('date_to');
     const message = document.getElementById('form-message');
     const submitBtn = document.getElementById('submit-btn');
+    const createCampaignsBtn = document.getElementById('create-campaigns-btn');
     let stageTomSelect = null;
     let regionTomSelect = null;
     let dateFromPicker = null;
@@ -202,6 +205,7 @@
     const manuallyChangedDeals = new Set();
     const saveContactTimers = {};
     const submitBtnDefaultText = submitBtn.textContent;
+    const createCampaignsBtnDefaultText = createCampaignsBtn.textContent;
     const externalPhoneForm = document.getElementById('external-phone-form');
     const externalPhoneFile = document.getElementById('external-phone-file');
     const externalPhoneSubmit = document.getElementById('external-phone-submit');
@@ -468,6 +472,29 @@
         message.classList.toggle('text-danger', !!isError);
         message.classList.toggle('text-muted', !isError);
     }
+    function buildTomoruPayload(filters) {
+        const regions = regionsFromIds(filters.region_ids);
+        const payload = {
+            entity_type: 'deal',
+            category_id: filters.category_id,
+            stage_ids: filters.stage_ids,
+            date_from: filters.date_from || null,
+            date_to: filters.date_to || null,
+            region_ids: filters.region_ids,
+            region_names: regions.map((region) => region.name).filter(Boolean),
+            group_by_timezone: document.getElementById('group-by-timezone').checked,
+            local_call_time: '10:00',
+        };
+        const overrides = {};
+        manuallyChangedDeals.forEach((dealKey) => {
+            overrides[parseInt(dealKey, 10)] = getOverrideSelection(dealKey).slice();
+        });
+        if (Object.keys(overrides).length > 0) {
+            payload.contact_overrides = overrides;
+        }
+        return payload;
+    }
+
     function parseContentDispositionFilename(header) {
         if (!header) return null;
         const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
@@ -1283,25 +1310,8 @@
         window.open(TOMORU_APP_URL, '_blank', 'noopener,noreferrer');
         submitBtn.disabled = true;
         submitBtn.innerHTML = loadingHtml('Формирование файла…');
-        const regions = regionsFromIds(f.region_ids);
-        const payload = {
-            entity_type: 'deal',
-            category_id: f.category_id,
-            stage_ids: f.stage_ids,
-            date_from: f.date_from || null,
-            date_to: f.date_to || null,
-            region_ids: f.region_ids,
-            region_names: regions.map((r) => r.name).filter(Boolean),
-            group_by_timezone: document.getElementById('group-by-timezone').checked,
-            local_call_time: '10:00',
-        };
-        const overrides = {};
-        manuallyChangedDeals.forEach((dealKey) => {
-            overrides[parseInt(dealKey, 10)] = getOverrideSelection(dealKey).slice();
-        });
-        if (Object.keys(overrides).length > 0) {
-            payload.contact_overrides = overrides;
-        }
+        const payload = buildTomoruPayload(f);
+
         try {
             const resp = await fetch('/exports/tomoru/download', {
                 method: 'POST',
@@ -1328,6 +1338,58 @@
             submitBtn.textContent = submitBtnDefaultText;
         }
     });
+    createCampaignsBtn.addEventListener('click', async () => {
+        setMessage('');
+        const filters = sanitizeFilterState(parseFiltersFromUrl());
+        if (filters.category_id == null) {
+            setMessage('Выберите воронку', true);
+            return;
+        }
+        const confirmed = window.confirm(
+            'Создать в Tomoru отдельные кампании по часовым поясам? Проверьте выбранные стадию и контакты.'
+        );
+        if (!confirmed) return;
+
+        createCampaignsBtn.disabled = true;
+        createCampaignsBtn.innerHTML = loadingHtml('Создание кампаний…');
+        const payload = buildTomoruPayload(filters);
+        payload.group_by_timezone = true;
+        try {
+            const resp = await fetch('/exports/tomoru/campaigns', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) {
+                const detail = typeof data.detail === 'string' ? data.detail : null;
+                throw new Error(detail || ('HTTP ' + resp.status));
+            }
+            if (data.failed_batches > 0) {
+                setMessage(
+                    `Создано кампаний: ${data.created_batches}; ошибок: ${data.failed_batches}. Проверьте Tomoru.`,
+                    true
+                );
+            } else if (data.launched_batches > 0) {
+                setMessage(
+                    `Создано и запланировано кампаний: ${data.created_batches}; номеров: ${data.prepared_contacts}.`,
+                    false
+                );
+            } else {
+                setMessage(
+                    `Создано кампаний в ожидании: ${data.created_batches}; номеров: ${data.prepared_contacts}. Звонки не запущены.`,
+                    false
+                );
+            }
+            window.open(TOMORU_APP_URL, '_blank', 'noopener,noreferrer');
+        } catch (err) {
+            setMessage(err.message, true);
+        } finally {
+            createCampaignsBtn.disabled = false;
+            createCampaignsBtn.textContent = createCampaignsBtnDefaultText;
+        }
+    });
+
     async function initPage() {
         initDatePickers();
         const initial = parseFiltersFromUrl();
