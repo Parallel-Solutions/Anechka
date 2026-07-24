@@ -122,6 +122,27 @@ class Settings(BaseSettings):
     tomoru_default_local_call_time: str = Field(
         default="10:00", alias="TOMORU_DEFAULT_LOCAL_CALL_TIME"
     )
+    # Current Tomoru REST API (https://app.tomoru.ru/api/openapi).
+    # Batch creation and launch are guarded separately so that configuring an
+    # API key cannot start real calls by itself.
+    tomoru_api_base_url: str = Field(
+        default="https://app.tomoru.ru", alias="TOMORU_API_BASE_URL"
+    )
+    tomoru_api_key: str = Field(default="", alias="TOMORU_API_KEY")
+    tomoru_agent_id: str = Field(default="", alias="TOMORU_AGENT_ID")
+    tomoru_batch_creation_enabled: bool = Field(
+        default=False, alias="TOMORU_BATCH_CREATION_ENABLED"
+    )
+    tomoru_batch_auto_launch_enabled: bool = Field(
+        default=False, alias="TOMORU_BATCH_AUTO_LAUNCH_ENABLED"
+    )
+    tomoru_batch_max_retries: int = Field(default=3, alias="TOMORU_BATCH_MAX_RETRIES")
+    tomoru_batch_retry_delay_seconds: int = Field(
+        default=300, alias="TOMORU_BATCH_RETRY_DELAY_SECONDS"
+    )
+    tomoru_result_callback_url: str = Field(
+        default="", alias="TOMORU_RESULT_CALLBACK_URL"
+    )
     tomoru_events_enabled: bool = Field(default=False, alias="TOMORU_EVENTS_ENABLED")
     tomoru_bot_id: str = Field(default="", alias="TOMORU_BOT_ID")
     tomoru_event_name: str = Field(default="coldCall", alias="TOMORU_EVENT_NAME")

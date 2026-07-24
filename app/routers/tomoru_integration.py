@@ -13,10 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import BASE_DIR
-from app.dependencies import get_app_settings, get_session
+from app.dependencies import get_app_settings, get_session, require_role
 from app.models import CallRetryQueueEntry, utcnow
 from app.services.auth_service import resolve_portal_id
 from app.services.call_results.retry_queue_gateway import RetryQueueGateway
+from app.services.call_results.tomoru_api import TomoruBatchDispatcher
 from app.services.call_results.tomoru_event_dispatcher import (
     TomoruCallbackUrlError,
     TomoruEventDispatcher,
@@ -46,6 +47,14 @@ class TomoruDispatchRequest(BaseModel):
     entry_ids: list[int] | None = None
     dry_run: bool = True
     include_future: bool = True
+    limit: int = Field(default=500, ge=1, le=5000)
+
+
+class TomoruBatchDispatchRequest(BaseModel):
+    import_id: int | None = None
+    entry_ids: list[int] | None = None
+    dry_run: bool = True
+    launch: bool = False
     limit: int = Field(default=500, ge=1, le=5000)
 
 
@@ -146,6 +155,45 @@ def tomoru_events_status(db: Session = Depends(get_session)):
         "callback_configured": bool(state and state.callback_url),
         "callback_host": urlparse(state.callback_url).hostname if state else None,
     }
+
+
+@router.get("/api/call-results/retry-queue/tomoru-api/status")
+def tomoru_api_status(db: Session = Depends(get_session)):
+    settings = get_app_settings(db)
+    return {
+        "mode": "enabled" if settings.tomoru_batch_creation_enabled else "dry_run",
+        "api_base_url": settings.tomoru_api_base_url,
+        "api_key_configured": bool(settings.tomoru_api_key),
+        "agent_id_configured": bool(settings.tomoru_agent_id),
+        "batch_creation_enabled": settings.tomoru_batch_creation_enabled,
+        "batch_auto_launch_enabled": settings.tomoru_batch_auto_launch_enabled,
+        "result_callback_configured": bool(settings.tomoru_result_callback_url),
+    }
+
+
+@router.post("/api/call-results/retry-queue/tomoru-batches/dispatch")
+def dispatch_tomoru_batches(
+    body: TomoruBatchDispatchRequest,
+    db: Session = Depends(get_session),
+    _admin=Depends(require_role("admin")),
+):
+    settings = get_app_settings(db)
+    portal_id = resolve_portal_id(settings)
+    entries = RetryQueueGateway(db, portal_id).list_entries(
+        import_id=body.import_id,
+        limit=None,
+    )
+    if body.entry_ids:
+        allowed_ids = set(body.entry_ids)
+        entries = [entry for entry in entries if entry.id in allowed_ids]
+    entries = entries[: body.limit]
+    report = TomoruBatchDispatcher(settings).dispatch(
+        entries,
+        dry_run=body.dry_run,
+        launch=body.launch,
+    )
+    db.commit()
+    return report
 
 
 @router.post("/api/call-results/retry-queue/tomoru-events/dispatch")
