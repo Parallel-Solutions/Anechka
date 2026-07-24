@@ -591,6 +591,7 @@
                 setActiveFilter(hashFilter, false);
             }
         });
+        showIndeterminateProgress('Загружаем данные импорта…');
         loadImport(importId);
         document.getElementById('btn-delete-import')?.addEventListener('click', async () => {
             if (!confirm('Удалить импорт?')) return;
@@ -800,7 +801,15 @@
 
             await loadImportDetail(importId, { reloadQueues: options.reloadQueues !== false });
             scheduleImportPoll(importId, statusData);
-        } catch (e) { /* ignore poll errors */ }
+        } catch (e) {
+            document.getElementById('import-progress')?.classList.add('d-none');
+            const alertEl = document.getElementById('import-alert');
+            showAlert(
+                alertEl,
+                e?.message || 'Не удалось загрузить данные импорта. Обновите страницу или повторите позже.',
+                'danger',
+            );
+        }
     }
 
     function getFilterFromHash() {
