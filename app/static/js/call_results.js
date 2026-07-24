@@ -180,6 +180,7 @@
     let currentImportId = null;
     let rowViewModal = null;
     let filterSendModal = null;
+    let bulkSendModal = null;
     let filterSendState = { filterId: null, rowIds: [], sending: false, sendDone: false };
     let currentViewRowId = null;
     let modalReviewState = {
@@ -635,6 +636,10 @@
         if (filterSendModalEl && window.bootstrap) {
             filterSendModal = new bootstrap.Modal(filterSendModalEl);
         }
+        const bulkSendModalEl = document.getElementById('bulk-send-modal');
+        if (bulkSendModalEl && window.bootstrap) {
+            bulkSendModal = new bootstrap.Modal(bulkSendModalEl, { backdrop: 'static', keyboard: false });
+        }
         document.getElementById('btn-filter-send-confirm')?.addEventListener('click', () => {
             if (filterSendState.sendDone) {
                 filterSendModal?.hide();
@@ -1006,59 +1011,128 @@
         }
     }
 
+    function resetBulkSendModalUi() {
+        const progressEl = document.getElementById('bulk-send-progress');
+        const bodyEl = document.getElementById('bulk-send-body');
+        const closeBtn = document.getElementById('btn-bulk-send-close');
+        const headerCloseBtn = document.getElementById('btn-bulk-send-header-close');
+        if (progressEl) { progressEl.classList.add('d-none'); progressEl.innerHTML = ''; }
+        if (bodyEl) bodyEl.innerHTML = '';
+        if (closeBtn) closeBtn.disabled = true;
+        if (headerCloseBtn) headerCloseBtn.disabled = true;
+    }
+
+    function unlockBulkSendModal() {
+        const closeBtn = document.getElementById('btn-bulk-send-close');
+        const headerCloseBtn = document.getElementById('btn-bulk-send-header-close');
+        if (closeBtn) {
+            closeBtn.disabled = false;
+            closeBtn.setAttribute('data-bs-dismiss', 'modal');
+        }
+        if (headerCloseBtn) {
+            headerCloseBtn.disabled = false;
+            headerCloseBtn.setAttribute('data-bs-dismiss', 'modal');
+        }
+        if (bulkSendModal?._config) {
+            bulkSendModal._config.backdrop = true;
+            bulkSendModal._config.keyboard = true;
+        }
+    }
+
     async function runSendAndExport(importId) {
         const alertEl = document.getElementById('import-alert');
         const btn = document.getElementById('btn-send-and-export');
         const sendRowIds = collectBitrixSendRowIds();
         const autoRows = getFilteredRows('auto_call');
         const autoPhones = collectFilteredPhones(autoRows);
-        const messages = [];
-        let sendStarted = false;
 
-        try {
-            if (btn) btn.disabled = true;
+        if (sendRowIds.length === 0 && autoPhones.length === 0) {
+            showAlert(alertEl, 'Нечего отправлять или выгружать.', 'warning');
+            return;
+        }
 
-            if (sendRowIds.length > 0) {
-                if (!diagnosticsCache) await loadDiagnosticsCache();
-                if (!diagnosticsCache?.execution_enabled) {
-                    messages.push(
-                        'Отправка в Bitrix24 пропущена: выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).',
-                    );
-                } else {
-                    const resp = await fetch(`/api/call-results/imports/${importId}/execute`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ confirmation_token: 'EXECUTE', row_ids: sendRowIds }),
-                    });
-                    const data = await resp.json().catch(() => ({}));
-                    if (!resp.ok) throw new Error(data.detail || 'Execute недоступен');
-                    messages.push(data.message || `Отправка в Bitrix24 запущена (${sendRowIds.length} строк).`);
-                    sendStarted = true;
+        if (btn) btn.disabled = true;
+
+        if (sendRowIds.length === 0) {
+            if (autoPhones.length > 0) {
+                try {
+                    await prepareRetryExport(importId, autoRows);
+                    showAlert(alertEl, `Скачан список автобзвона: ${autoPhones.length} телефонов.`, 'success');
+                } catch (e) {
+                    showAlert(alertEl, e.message, 'danger');
                 }
             }
+            updateSendAndExportButton();
+            return;
+        }
 
-            if (autoPhones.length > 0) {
-                await prepareRetryExport(importId, autoRows);
-                messages.push(`Скачан список автобзвона: ${autoPhones.length} телефонов.`);
-            }
+        const progressEl = document.getElementById('bulk-send-progress');
+        const bodyEl = document.getElementById('bulk-send-body');
 
-            if (!messages.length) {
-                showAlert(alertEl, 'Нечего отправлять или выгружать.', 'warning');
+        resetBulkSendModalUi();
+        bulkSendModal?.show();
+
+        try {
+            if (!diagnosticsCache) await loadDiagnosticsCache();
+
+            if (!diagnosticsCache?.execution_enabled) {
+                if (progressEl) {
+                    progressEl.classList.remove('d-none');
+                    progressEl.innerHTML = '<div class="alert alert-warning small mb-0">Отправка в Bitrix24 пропущена: выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).</div>';
+                }
+                if (autoPhones.length > 0) {
+                    await prepareRetryExport(importId, autoRows);
+                }
+                unlockBulkSendModal();
                 updateSendAndExportButton();
                 return;
             }
 
-            const hasSendSkip = sendRowIds.length > 0 && !sendStarted;
-            showAlert(alertEl, messages.join(' '), hasSendSkip ? 'warning' : 'success');
-
-            if (sendStarted) {
-                loadImport(importId, { fullReload: true });
-            } else {
-                updateSendAndExportButton();
+            if (progressEl) {
+                progressEl.classList.remove('d-none');
+                progressEl.innerHTML = '<div class="d-flex align-items-center gap-2"><div class="spinner-border spinner-border-sm"></div><span>Запуск отправки…</span></div>';
             }
+
+            const resp = await fetch(`/api/call-results/imports/${importId}/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirmation_token: 'EXECUTE', row_ids: sendRowIds }),
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || 'Execute недоступен');
+
+            if (bodyEl) bodyEl.innerHTML = buildBulkSendResultsHtml([]);
+
+            const updateModal = (statusData) => {
+                if (bodyEl) bodyEl.innerHTML = buildBulkSendResultsHtml(statusData.items || []);
+                if (progressEl) progressEl.innerHTML = renderFilterSendProgress(statusData);
+            };
+
+            updateModal({ items: [], execute_status: 'executing' });
+
+            if (autoPhones.length > 0) {
+                await prepareRetryExport(importId, autoRows);
+            }
+
+            const pollResult = await pollFilterSendStatus(importId, sendRowIds, { onUpdate: updateModal });
+            if (pollResult.data) updateModal(pollResult.data);
+
+            const pageMsg = pollResult.ok
+                ? `Отправка в Bitrix24 завершена${autoPhones.length > 0 ? `, скачан список автобзвона: ${autoPhones.length} телефонов` : ''}`
+                : (pollResult.message || 'Отправка завершена с ошибками');
+            showAlert(alertEl, pageMsg, pollResult.ok ? 'success' : (pollResult.data ? 'warning' : 'danger'));
+
+            loadImport(importId, { fullReload: true });
         } catch (e) {
+            const progressEl2 = document.getElementById('bulk-send-progress');
+            if (progressEl2) {
+                progressEl2.classList.remove('d-none');
+                progressEl2.innerHTML = `<div class="alert alert-danger small mb-0">${escapeHtml(e.message)}</div>`;
+            }
             showAlert(alertEl, e.message, 'danger');
             updateSendAndExportButton();
+        } finally {
+            unlockBulkSendModal();
         }
     }
 
@@ -1124,6 +1198,65 @@
             ? bitrixLink(url, label)
             : `<code>${escapeHtml(label)}</code>`;
         return `<div class="small text-muted mb-1">ID в Bitrix: ${idHtml}</div>`;
+    }
+
+    const BULK_ENTITY_GROUPS = [
+        {
+            label: 'Контакты',
+            methods: new Set(['crm.contact.add', 'crm.contact.update', 'crm.deal.contact.add']),
+        },
+        {
+            label: 'Задачи и активности',
+            methods: new Set(['tasks.task.add', 'crm.activity.todo.add']),
+        },
+        {
+            label: 'Комментарии',
+            methods: new Set(['crm.timeline.comment.add']),
+        },
+    ];
+
+    function buildBulkSendResultsHtml(logItems) {
+        const items = logItems || [];
+        if (!items.length) {
+            return '<p class="text-muted small mb-0">Ожидание действий…</p>';
+        }
+
+        const assigned = new Set();
+        const sections = BULK_ENTITY_GROUPS.map((group) => {
+            const groupItems = items.filter((it) => group.methods.has(it.method));
+            groupItems.forEach((it) => assigned.add(it.id));
+            return { label: group.label, items: groupItems };
+        });
+        const other = items.filter((it) => !assigned.has(it.id));
+        if (other.length) sections.push({ label: 'Прочее', items: other });
+
+        return sections
+            .filter((s) => s.items.length)
+            .map((section) => {
+                const rows = section.items.map((item) => {
+                    const extHtml = renderBitrixExternalId(item);
+                    const errHtml = item.last_error
+                        ? `<div class="small text-danger mb-1">${escapeHtml(item.last_error)}</div>`
+                        : '';
+                    const desc = escapeHtml(item.human_summary || METHOD_DESC[item.method] || item.method);
+                    return `
+                        <div class="d-flex align-items-start gap-2 py-2 border-bottom bulk-send-item">
+                            <div class="flex-grow-1 min-w-0">
+                                <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+                                    ${renderExecutionStatusBadge(item.execution_status)}
+                                    <span class="small">${desc}</span>
+                                </div>
+                                ${errHtml}
+                                ${extHtml}
+                            </div>
+                        </div>`;
+                }).join('');
+                return `
+                    <div class="mb-3">
+                        <div class="fw-semibold small text-muted text-uppercase mb-1">${escapeHtml(section.label)}</div>
+                        ${rows}
+                    </div>`;
+            }).join('');
     }
 
     function buildSendLogHtml(filterId, rows, logItems) {

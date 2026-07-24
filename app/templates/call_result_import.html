@@ -112,6 +112,43 @@
 </div>
 
 
+
+
+<div class="modal fade" id="bulk-send-modal" tabindex="-1" aria-labelledby="bulk-send-title" aria-hidden="true">
+
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+
+        <div class="modal-content">
+
+            <div class="modal-header">
+
+                <h5 class="modal-title" id="bulk-send-title">Отправка в Битрикс24</h5>
+
+                <button type="button" class="btn-close" id="btn-bulk-send-header-close" aria-label="Закрыть" disabled></button>
+
+            </div>
+
+            <div class="modal-body">
+
+                <div id="bulk-send-progress" class="mb-3 d-none"></div>
+
+                <div id="bulk-send-body"></div>
+
+            </div>
+
+            <div class="modal-footer">
+
+                <button type="button" class="btn btn-outline-secondary" id="btn-bulk-send-close" data-bs-dismiss="modal" disabled>Закрыть</button>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>
+
+
 {% endblock %}
 
 {% block scripts %}
@@ -122,7 +159,7 @@ window.CALL_RESULT_IMPORT_ID = {{ import_id }};
 
 </script>
 
-<script src="/static/js/call_results.js?v=20260724a"></script>
+<script src="/static/js/call_results.js?v=20260724b"></script>
 
 <script>initCallResultImportPage({{ import_id }});</script>
 
