@@ -94,6 +94,15 @@ def test_dispatcher_creates_pending_batches_without_launch():
     assert report["created_batches"] == 1
     assert report["launched_batches"] == 0
     assert calls[0][0:2] == ("POST", "https://app.tomoru.test/api/call_batches")
+    assert calls[1][0:2] == (
+        "PATCH",
+        "https://app.tomoru.test/api/call_batches/batch-1",
+    )
+    schedule = calls[1][2]["json"]["data"]["attributes"]
+    assert schedule == {
+        "default_timezone": "Europe/Moscow",
+        "daily_start_time": "10:00:00",
+    }
     csv_payload = calls[0][2]["files"]["csv_file"][1].decode("utf-8-sig")
     rows = list(csv.DictReader(io.StringIO(csv_payload)))
     assert rows[0]["phone_number"] == "+79298695656"

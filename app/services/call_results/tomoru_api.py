@@ -7,6 +7,7 @@ import io
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -53,11 +54,30 @@ class TomoruApiClient:
         )
 
     def create_initial_batch(self, draft: TomoruInitialBatchDraft) -> dict[str, Any]:
-        return self._create_uploaded_batch(
+        created = self._create_uploaded_batch(
             name=draft.campaign_name,
             csv_bytes=self._build_initial_csv(draft),
             scheduled_at=draft.scheduled_at,
         )
+        batch_id = str(created.get("id") or "")
+        if not batch_id:
+            return created
+        local_start_time = draft.scheduled_at.astimezone(
+            ZoneInfo(draft.timezone)
+        ).strftime("%H:%M:%S")
+        try:
+            self.update_batch_schedule(
+                batch_id,
+                timezone_name=draft.timezone,
+                daily_start_time=local_start_time,
+            )
+        except Exception:
+            try:
+                self.cancel_batch(batch_id)
+            except Exception:
+                pass
+            raise
+        return created
 
     def _create_uploaded_batch(
         self,
@@ -88,16 +108,55 @@ class TomoruApiClient:
     def launch_batch(self, batch_id: str) -> dict[str, Any]:
         return self._request("PATCH", f"/api/call_batches/{batch_id}/launch")
 
+    def update_batch_schedule(
+        self,
+        batch_id: str,
+        *,
+        timezone_name: str,
+        daily_start_time: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/api/call_batches/{batch_id}",
+            headers={
+                "Accept": "application/vnd.api+json",
+                "Content-Type": "application/vnd.api+json",
+            },
+            json={
+                "data": {
+                    "type": "Call Batch",
+                    "id": batch_id,
+                    "attributes": {
+                        "default_timezone": timezone_name,
+                        "daily_start_time": daily_start_time,
+                    },
+                }
+            },
+        )
+
+    def cancel_batch(self, batch_id: str) -> dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/api/call_batches/{batch_id}/cancel",
+            headers={
+                "Accept": "application/vnd.api+json",
+                "Content-Type": "application/vnd.api+json",
+            },
+            json={"data": {"type": "Call Batch", "id": batch_id}},
+        )
+
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         if not self.settings.tomoru_api_key:
             raise TomoruApiError("TOMORU_API_KEY is not configured")
+        headers = {
+            "Authorization": f"Bearer {self.settings.tomoru_api_key}",
+            "Accept": "application/json",
+        }
+        headers.update(kwargs.pop("headers", {}))
         response = self._request_transport(
             method,
             f"{self.base_url}{path}",
-            headers={
-                "Authorization": f"Bearer {self.settings.tomoru_api_key}",
-                "Accept": "application/json",
-            },
+            headers=headers,
             timeout=self.settings.tomoru_http_timeout_seconds,
             **kwargs,
         )
