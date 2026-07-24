@@ -47,6 +47,12 @@
 </div>
 
 {% if imports %}
+{% set import_status_labels = {
+    'uploaded': 'Загружен',
+    'processing': 'Обработка',
+    'ready': 'Готово',
+    'failed': 'Ошибка'
+} %}
 <h2 class="h5 mb-3">Импорты</h2>
 <div class="table-responsive">
     <table class="table table-hover align-middle">
@@ -59,7 +65,7 @@
                 <div class="fw-semibold">{{ imp.campaign_name or imp.original_filename }}</div>
                 {% if imp.campaign_name %}<div class="small text-muted">{{ imp.original_filename }}</div>{% endif %}
             </td>
-            <td><span class="badge status-{{ imp.status }}">{{ imp.status }}</span></td>
+            <td><span class="badge status-{{ imp.status }}">{{ import_status_labels.get(imp.status, imp.status) }}</span></td>
             <td>{{ imp.total_rows }}</td>
             <td>{{ format_dt(imp.created_at) if format_dt else imp.created_at }}</td>
             <td><a href="/call-results/imports/{{ imp.id }}" class="btn btn-sm btn-outline-primary">Открыть</a></td>
