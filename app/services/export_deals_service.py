@@ -617,6 +617,7 @@ class ExportDealsService:
         stage_ids: list[str] | None = None,
         region_id: int | None = None,
         region_ids: list[int] | None = None,
+        district_names: list[str] | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
         offset: int = 0,
@@ -636,6 +637,8 @@ class ExportDealsService:
             params["region_ids"] = region_ids
         elif region_id is not None:
             params["region_id"] = region_id
+        if district_names:
+            params['district_names'] = district_names
         if date_from is not None:
             params["date_from"] = date_from.isoformat()
         if date_to is not None:
@@ -768,6 +771,7 @@ class ExportDealsService:
             "date_from": date_from,
             "date_to": date_to,
         }
+        export_query['district_names'] = params.get('district_names')
         matched_total = repo.count_entities_for_export(ENTITY_DEAL, **export_query)
         lpr_config = load_lpr_config(self.db)
         saved_overrides = load_tomoru_contact_overrides(self.db, self.portal_id)

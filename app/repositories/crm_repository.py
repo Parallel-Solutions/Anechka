@@ -27,6 +27,11 @@ from app.models import (
 from app.services.export_plan.payload_keys import camel_key
 from app.services.intelligent_export.contact_phone_heuristic import TOMORU_REGION_FIELD
 from app.services.intelligent_export.kp_legacy_stages import KP_CATEGORY_ID, legacy_kp_stage_ids
+from app.services.tomoru_districts import (
+    TOMORU_DISTRICT_FIELDS,
+    district_names_from_payload,
+    normalize_district_name,
+)
 from app.utils.datetime_utils import parse_bitrix_datetime
 from app.utils.hash_utils import definition_hash, payload_hash
 
@@ -76,6 +81,7 @@ def _build_export_entities_query(
     region_id: int | None = None,
     region_ids: list[int] | None = None,
     region_field: str = TOMORU_REGION_FIELD,
+    district_names: list[str] | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
     is_deleted: bool = False,
@@ -130,6 +136,29 @@ def _build_export_entities_query(
                 )
             )
         q = q.where(or_(*region_conditions))
+    effective_districts = [
+        normalize_district_name(value)
+        for value in dict.fromkeys(district_names or [])
+        if normalize_district_name(value)
+    ]
+    if effective_districts:
+        district_conditions = []
+        for field_code in TOMORU_DISTRICT_FIELDS:
+            for payload_key in dict.fromkeys(
+                (field_code, field_code.lower(), camel_key(field_code))
+            ):
+                payload_value = cast(
+                    CrmEntity.raw_payload[payload_key].as_string(),
+                    String,
+                )
+                for district_name in effective_districts:
+                    escaped_tokens = [
+                        token.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                        for token in district_name.split()
+                    ]
+                    pattern = "%" + "%".join(escaped_tokens) + "%"
+                    district_conditions.append(payload_value.like(pattern, escape="\\"))
+        q = q.where(or_(*district_conditions))
     if date_from is not None:
         q = q.where(CrmEntity.created_time >= date_from)
     if date_to is not None:
@@ -671,6 +700,7 @@ class CrmRepository:
         region_id: int | None = None,
         region_ids: list[int] | None = None,
         region_field: str = TOMORU_REGION_FIELD,
+        district_names: list[str] | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         is_deleted: bool = False,
@@ -686,6 +716,7 @@ class CrmRepository:
             region_id=region_id,
             region_ids=region_ids,
             region_field=region_field,
+            district_names=district_names,
             date_from=date_from,
             date_to=date_to,
             is_deleted=is_deleted,
@@ -705,6 +736,7 @@ class CrmRepository:
         region_id: int | None = None,
         region_ids: list[int] | None = None,
         region_field: str = TOMORU_REGION_FIELD,
+        district_names: list[str] | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         offset: int = 0,
@@ -722,6 +754,7 @@ class CrmRepository:
             region_id=region_id,
             region_ids=region_ids,
             region_field=region_field,
+            district_names=district_names,
             date_from=date_from,
             date_to=date_to,
             is_deleted=is_deleted,
@@ -735,6 +768,32 @@ class CrmRepository:
         if limit is not None:
             q = q.limit(limit)
         return list(self.db.scalars(q))
+
+    def list_district_names_for_export(
+        self,
+        entity_type_id: int,
+        *,
+        category_id: int | None = None,
+        region_ids: list[int] | None = None,
+        region_field: str = TOMORU_REGION_FIELD,
+        limit: int = 500,
+    ) -> list[str]:
+        '''Return distinct district labels available for the current filters.'''
+        q = _build_export_entities_query(
+            self.portal_id,
+            entity_type_id,
+            category_id=category_id,
+            region_ids=region_ids,
+            region_field=region_field,
+            is_deleted=False,
+            db=self.db,
+        )
+        payload_query = q.with_only_columns(CrmEntity.raw_payload).order_by(None)
+        names_by_key: dict[str, str] = {}
+        for raw_payload in self.db.scalars(payload_query).yield_per(500):
+            for name in district_names_from_payload(raw_payload):
+                names_by_key.setdefault(name.casefold(), name)
+        return sorted(names_by_key.values(), key=str.casefold)[: max(1, limit)]
 
     def get_entities(
         self, entity_type_id: int, entity_ids: list[int]

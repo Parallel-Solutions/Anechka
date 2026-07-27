@@ -245,10 +245,13 @@ class LprTomoruService:
         raw_stage_ids = _filter_stage_ids(params)
         region_ids = _filter_region_ids(params)
         region_names = _filter_region_names(params)
+        district_names = [str(value) for value in params.get('district_names') or []]
         date_from, date_to = _date_range_bounds(params.get("date_from"), params.get("date_to"))
 
         crm_repo = CrmRepository(self.db, self.portal_id)
         description_parts = [f"воронка {category_id}", "из локальной БД"]
+        if district_names:
+            description_parts.append('районы ' + ', '.join(district_names))
         if raw_stage_ids:
             description_parts.append("стадии " + ", ".join(raw_stage_ids))
         if region_ids:
@@ -285,6 +288,7 @@ class LprTomoruService:
             category_id=category_id,
             stage_ids=stage_ids or None,
             region_ids=region_ids or None,
+            district_names=district_names or None,
             date_from=date_from,
             date_to=date_to,
         )
@@ -296,6 +300,7 @@ class LprTomoruService:
             category_id=category_id,
             stage_ids=stage_ids or None,
             region_ids=region_ids or None,
+            district_names=district_names or None,
             date_from=date_from,
             date_to=date_to,
         )

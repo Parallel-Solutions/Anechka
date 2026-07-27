@@ -22,7 +22,16 @@ def _lpr_config() -> LprConfig:
     return LprConfig(keywords=["директор"], fields=["POST"], stopwords=["уволен"])
 
 
-def _deal_entity(db, deal_id: int, *, category_id: int = 15, stage_id: str = "C15:NEW", region_id: int | None = None):
+def _deal_entity(
+    db,
+    deal_id: int,
+    *,
+    category_id: int = 15,
+    stage_id: str = "C15:NEW",
+    region_id: int | None = None,
+    district: str | None = None,
+    district_field: str = "UF_CRM_5ECE25C46C803",
+):
     from app.models import CrmEntity
 
     raw_payload = {
@@ -33,6 +42,8 @@ def _deal_entity(db, deal_id: int, *, category_id: int = 15, stage_id: str = "C1
     }
     if region_id is not None:
         raw_payload["UF_CRM_5ECE25C5D78E0"] = region_id
+    if district is not None:
+        raw_payload[district_field] = district
 
     e = CrmEntity(
         portal_id=_portal(),
@@ -223,6 +234,44 @@ def test_tomoru_db_export_filters_by_multiple_regions(db_session, tmp_path):
     assert "79992222222" in content
     assert "79993333333" not in content
     assert sorted(service.phones) == ["79991111111", "79992222222"]
+
+
+def test_tomoru_db_export_filters_by_district(db_session, tmp_path):
+    settings = get_settings()
+    settings.export_dir = str(tmp_path)
+
+    _deal_entity(
+        db_session,
+        3201,
+        district="Мамонтовский муниципальный район",
+        district_field="UF_CRM_UFCRM5ED11CA3518DE",
+    )
+    _deal_entity(db_session, 3202, district="Другой муниципальный район")
+    _contact(db_session, 721, post="директор", full_name="Мамонтов Мамонтов")
+    _contact(db_session, 722, post="директор", full_name="Другой Директор")
+    _phone(db_session, 721, "+79994444441", "MOBILE")
+    _phone(db_session, 722, "+79994444442", "MOBILE")
+    _link(db_session, 721, 3201)
+    _link(db_session, 722, 3202)
+
+    service = LprTomoruService(
+        settings=settings,
+        cancel_check=lambda: False,
+        lpr_config=_lpr_config(),
+        db=db_session,
+        portal_id=_portal(),
+    )
+    result_path = service.run_lpr_tomoru_export(
+        {
+            "entity_type": "deal",
+            "category_id": 15,
+            "district_names": ["Мамонтовский муниципальный район"],
+        }
+    )
+
+    content = Path(result_path).read_text(encoding="utf-8-sig")
+    assert "79994444441" in content
+    assert "79994444442" not in content
 
 
 def test_tomoru_db_export_one_phone_per_deal(db_session, tmp_path):

@@ -44,6 +44,12 @@
                     <div id="region-loading" class="loading-inline text-muted small d-none mb-1"></div>
                     <select class="form-select" name="region_id" id="region_id" multiple></select>
                 </div>
+                <div class="col-md-6" id="district-wrap">
+                    <label class="form-label">Район</label>
+                    <div id="district-loading" class="loading-inline text-muted small d-none mb-1"></div>
+                    <select class="form-select" name="district" id="district" multiple></select>
+                    <div class="form-text">Значение поля «Место проведения работ» в сделке.</div>
+                </div>
                 <div class="col-md-6">
                     <label class="form-label">Период создания</label>
                     <div class="row g-2">
@@ -177,6 +183,7 @@
     const stageWrap = document.getElementById('stage-wrap');
     const stageSelect = document.getElementById('stage_id');
     const regionSelect = document.getElementById('region_id');
+    const districtSelect = document.getElementById('district');
     const dateFromInput = document.getElementById('date_from');
     const dateToInput = document.getElementById('date_to');
     const message = document.getElementById('form-message');
@@ -184,6 +191,7 @@
     const createCampaignsBtn = document.getElementById('create-campaigns-btn');
     let stageTomSelect = null;
     let regionTomSelect = null;
+    let districtTomSelect = null;
     let dateFromPicker = null;
     let dateToPicker = null;
     const stageNameById = {};
@@ -319,6 +327,7 @@
             category_id: null,
             stage_ids: [],
             region_ids: [],
+            district_names: [],
             date_from: '',
             date_to: '',
             offset: 0,
@@ -337,6 +346,7 @@
         }
         const hasFilter = stageIds.length > 0
             || params.getAll('region_id').filter(Boolean).length > 0
+            || params.getAll('district').filter(Boolean).length > 0
             || Boolean(params.get('date_from'))
             || Boolean(params.get('date_to'));
         if (hasFilter) return DEFAULT_CATEGORY;
@@ -349,6 +359,7 @@
         state.region_ids = params.getAll('region_id')
             .map((id) => parseInt(id, 10))
             .filter((id) => !isNaN(id));
+        state.district_names = params.getAll('district').filter(Boolean);
         state.date_from = params.get('date_from') || '';
         state.date_to = params.get('date_to') || '';
         if (params.has('category_id')) {
@@ -370,6 +381,7 @@
         }
         state.stage_ids.forEach((id) => params.append('stage_id', id));
         state.region_ids.forEach((id) => params.append('region_id', String(id)));
+        state.district_names.forEach((name) => params.append('district', name));
         if (state.date_from) params.set('date_from', state.date_from);
         if (state.date_to) params.set('date_to', state.date_to);
         if (state.offset > 0) {
@@ -385,6 +397,7 @@
             category_id: readCategoryFromForm(),
             stage_ids: getSelectedStages(),
             region_ids: regions.map((r) => r.id),
+            district_names: getSelectedDistricts(),
             date_from: dateRange.date_from,
             date_to: dateRange.date_to,
             offset: 0,
@@ -398,6 +411,7 @@
         return f.category_id != null
             || f.stage_ids.length > 0
             || f.region_ids.length > 0
+            || f.district_names.length > 0
             || Boolean(f.date_from)
             || Boolean(f.date_to);
     }
@@ -408,6 +422,7 @@
         return Object.assign({}, state, {
             stage_ids: (state.stage_ids || []).filter((id) => optionExists(stageSelect, id)),
             region_ids: (state.region_ids || []).filter((id) => optionExists(regionSelect, id)),
+            district_names: (state.district_names || []).filter((name) => optionExists(districtSelect, name)),
         });
     }
     function regionsFromIds(regionIds) {
@@ -438,14 +453,22 @@
             }
             setDateFieldsOnPickers(state.date_from, state.date_to);
             dealsState.offset = state.offset;
-            const sanitized = sanitizeFilterState(state);
+            const districtNames = (state.district_names || []).slice();
+            const sanitized = sanitizeFilterState(Object.assign({}, state, { district_names: [] }));
             if (stageTomSelect) {
                 stageTomSelect.setValue(sanitized.stage_ids, silent);
             }
             if (regionTomSelect) {
                 regionTomSelect.setValue(sanitized.region_ids.map(String), silent);
             }
-            return sanitized;
+            await loadDistricts(districtNames, silent);
+            const complete = sanitizeFilterState(Object.assign({}, sanitized, {
+                district_names: districtNames,
+            }));
+            if (districtTomSelect) {
+                districtTomSelect.setValue(complete.district_names, silent);
+            }
+            return complete;
         } finally {
             applyingFromUrl = false;
         }
@@ -482,6 +505,7 @@
             date_to: filters.date_to || null,
             region_ids: filters.region_ids,
             region_names: regions.map((region) => region.name).filter(Boolean),
+            district_names: filters.district_names,
             group_by_timezone: document.getElementById('group-by-timezone').checked,
             local_call_time: '10:00',
         };
@@ -798,8 +822,10 @@
             regionSelect.disabled = false;
             regionTomSelect.enable();
         }
-        regionTomSelect.on('change', () => {
-            onFilterChange({ offset: 0 });
+        regionTomSelect.on('change', async () => {
+            if (applyingFromUrl) return;
+            await loadDistricts([], true);
+            onFilterChange({ offset: 0, district_names: [] });
         });
     }
     async function loadRegions(){
@@ -825,6 +851,57 @@
             setMessage('Не удалось загрузить регионы: ' + e.message, true);
         } finally {
             setWrapLoading('region-loading', false);
+        }
+    }
+    function resetDistrictSelect(){
+        if(districtTomSelect){
+            districtTomSelect.destroy();
+            districtTomSelect = null;
+        }
+        districtSelect.innerHTML = '';
+    }
+    function initDistrictTomSelect(){
+        if(typeof TomSelect === 'undefined') return;
+        districtTomSelect = new TomSelect('#district', multiTomSelectOptions('— любой район —'));
+        if(readCategoryFromForm() == null){
+            districtTomSelect.disable();
+        } else {
+            districtSelect.disabled = false;
+            districtTomSelect.enable();
+        }
+        districtTomSelect.on('change', () => {
+            onFilterChange({ offset: 0 });
+        });
+    }
+    async function loadDistricts(selectedNames, silent){
+        const selected = Array.isArray(selectedNames) ? selectedNames : getSelectedDistricts();
+        resetDistrictSelect();
+        const categoryId = readCategoryFromForm();
+        if(categoryId == null){
+            initDistrictTomSelect();
+            return;
+        }
+        setWrapLoading('district-loading', true, 'Загрузка районов…');
+        try {
+            const params = new URLSearchParams({ category_id: String(categoryId) });
+            getSelectedRegions().forEach((region) => params.append('region_id', String(region.id)));
+            const resp = await fetch('/api/tomoru/districts?' + params);
+            if(!resp.ok) throw new Error('HTTP ' + resp.status);
+            const districts = await resp.json();
+            districts.forEach((name) => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                districtSelect.appendChild(option);
+            });
+            initDistrictTomSelect();
+            const valid = selected.filter((name) => optionExists(districtSelect, name));
+            if(districtTomSelect) districtTomSelect.setValue(valid, silent !== false);
+        } catch(e) {
+            initDistrictTomSelect();
+            setMessage('Не удалось загрузить районы: ' + e.message, true);
+        } finally {
+            setWrapLoading('district-loading', false);
         }
     }
     function clearRegionSelection(){
@@ -856,6 +933,11 @@
                 name: opt ? opt.textContent : null,
             };
         });
+    }
+    function getSelectedDistricts(){
+        const value = districtTomSelect ? districtTomSelect.getValue() : [];
+        const names = Array.isArray(value) ? value : (value ? [value] : []);
+        return names.filter(Boolean);
     }
     function sourceLabel(source) {
         return source === 'company' ? 'Компания' : 'Сделка';
@@ -1130,6 +1212,7 @@
             });
             f.stage_ids.forEach((id) => params.append('stage_id', id));
             f.region_ids.forEach((id) => params.append('region_id', String(id)));
+            f.district_names.forEach((name) => params.append('district', name));
             if (f.date_from) params.set('date_from', f.date_from);
             if (f.date_to) params.set('date_to', f.date_to);
             const resp = await fetch('/api/tomoru/deals?' + params, {
@@ -1257,7 +1340,8 @@
             resetStages();
             initStageTomSelect();
         }
-        onFilterChange({ offset: 0, stage_ids: [] });
+        await loadDistricts([], true);
+        onFilterChange({ offset: 0, stage_ids: [], district_names: [] });
     });
     document.querySelectorAll('input[name="lpr-view"]').forEach((el) => {
         el.addEventListener('change', () => {

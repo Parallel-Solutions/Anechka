@@ -18,7 +18,8 @@ from app.exceptions import ExportValidationError
 from app.services.auth_service import resolve_portal_id
 from app.services.lpr_service import load_lpr_config
 from app.services.lpr_tomoru_service import LprTomoruService, _date_range_bounds
-from app.models import ExportJob
+from app.models import ENTITY_DEAL, ExportJob
+from app.repositories.crm_repository import CrmRepository
 from app.schemas import (
     CategoryFullExportRequest,
     ExportDealItem,
@@ -49,6 +50,21 @@ from app.services.call_results.tomoru_api import TomoruInitialBatchDispatcher
 router = APIRouter(tags=["exports"])
 job_service = JobService()
 EXTERNAL_PHONE_PREVIEW_LIMIT = 100
+
+
+@router.get('/api/tomoru/districts', response_model=list[str])
+def tomoru_districts(
+    category_id: int | None = Query(default=None),
+    region_id: list[int] = Query(default=[]),
+    db: Session = Depends(get_db),
+):
+    settings = get_app_settings(db)
+    repo = CrmRepository(db, resolve_portal_id(settings))
+    return repo.list_district_names_for_export(
+        ENTITY_DEAL,
+        category_id=category_id,
+        region_ids=region_id or None,
+    )
 
 
 def _job_to_response(job: ExportJob) -> ExportJobResponse:
@@ -361,6 +377,7 @@ def tomoru_deals_preview(
     category_id: int = Query(default=15),
     stage_id: list[str] = Query(default=[]),
     region_id: list[int] = Query(default=[]),
+    district: list[str] = Query(default=[]),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     offset: int = Query(default=0, ge=0),
@@ -384,6 +401,7 @@ def tomoru_deals_preview(
         category_id=category_id,
         stage_ids=filtered_stage_ids,
         region_ids=region_id or None,
+        district_names=district or None,
         date_from=date_from,
         date_to=date_to,
         offset=offset,

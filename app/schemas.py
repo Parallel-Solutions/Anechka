@@ -89,6 +89,7 @@ class TomoruExportRequest(BaseModel):
     region_ids: list[int] = Field(default_factory=list)
     region_name: str | None = None
     region_names: list[str] = Field(default_factory=list)
+    district_names: list[str] = Field(default_factory=list)
     date_from: date | None = None
     date_to: date | None = None
     contact_overrides: dict[int, list[int]] = Field(default_factory=dict)
@@ -140,9 +141,19 @@ class TomoruExportRequest(BaseModel):
         if self.region_name and self.region_name not in region_names:
             region_names.insert(0, self.region_name)
 
+        district_names: list[str] = []
+        seen_districts: set[str] = set()
+        for value in self.district_names:
+            name = ' '.join(str(value).split())
+            key = name.casefold()
+            if name and key not in seen_districts:
+                seen_districts.add(key)
+                district_names.append(name)
+
         self.stage_ids = stage_ids
         self.region_ids = region_ids
         self.region_names = region_names
+        self.district_names = district_names
         return self
 
 

@@ -194,6 +194,28 @@ def test_tomoru_export_with_multiple_regions_creates_job(client):
     assert args[2]["region_names"] == ["Томская область", "Москва"]
 
 
+def test_tomoru_export_with_district_creates_job(client):
+    with patch("app.routers.exports.job_service") as mock_svc:
+        mock_job = MagicMock()
+        mock_job.id = 81
+        mock_svc.create_job.return_value = mock_job
+        resp = client.post(
+            "/exports/tomoru",
+            json={
+                "entity_type": "deal",
+                "category_id": 15,
+                "district_names": [
+                    "  Мамонтовский   муниципальный район ",
+                    "мамонтовский муниципальный район",
+                ],
+            },
+        )
+
+    assert resp.status_code == 200
+    args = mock_svc.create_job.call_args[0]
+    assert args[2]["district_names"] == ["Мамонтовский муниципальный район"]
+
+
 def test_tomoru_export_backward_compat_singular_stage(client):
     with patch("app.routers.exports.job_service") as mock_svc, patch(
         "app.routers.exports.BitrixClient"
@@ -342,6 +364,9 @@ def test_tomoru_export_page_has_deals_preview(client):
     assert resp.status_code == 200
     assert 'id="deals-preview-card"' in resp.text
     assert 'class="col-md-6 d-none" id="region-wrap"' not in resp.text
+    assert 'id="district-wrap"' in resp.text
+    assert 'id="district"' in resp.text
+    assert 'Место проведения работ' in resp.text
     assert "tom-select" in resp.text.lower()
     assert "/exports/tomoru/download" in resp.text
     assert "app.tomoru.ru/org/parallelnye-resheniya" in resp.text
