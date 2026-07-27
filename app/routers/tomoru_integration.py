@@ -183,7 +183,7 @@ def dispatch_tomoru_batches(
         import_id=body.import_id,
         limit=None,
     )
-    if body.entry_ids:
+    if body.entry_ids is not None:
         allowed_ids = set(body.entry_ids)
         entries = [entry for entry in entries if entry.id in allowed_ids]
     entries = entries[: body.limit]
@@ -207,7 +207,7 @@ def dispatch_tomoru_events(
         import_id=body.import_id,
         limit=None,
     )
-    if body.entry_ids:
+    if body.entry_ids is not None:
         allowed_ids = set(body.entry_ids)
         entries = [entry for entry in entries if entry.id in allowed_ids]
     entries = entries[: body.limit]

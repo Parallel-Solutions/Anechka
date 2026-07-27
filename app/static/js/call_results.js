@@ -969,7 +969,59 @@
         if (retryBtn) retryBtn.disabled = processing || autoCount === 0;
     }
 
-    async function prepareRetryExport(importId, autoRows) {
+    async function dispatchRetryQueueToTomoru(importId, entryIds) {
+        if (!Array.isArray(entryIds) || entryIds.length === 0) return null;
+        const statusResponse = await fetch('/api/call-results/retry-queue/tomoru-api/status');
+        const status = await statusResponse.json().catch(() => ({}));
+        if (!statusResponse.ok) {
+            throw new Error(status.detail || 'Не удалось проверить подключение Tomoru');
+        }
+        if (
+            !status.batch_creation_enabled
+            || !status.api_key_configured
+            || !status.agent_id_configured
+        ) {
+            return null;
+        }
+
+        const response = await fetch('/api/call-results/retry-queue/tomoru-batches/dispatch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                import_id: importId,
+                entry_ids: entryIds,
+                dry_run: false,
+                launch: Boolean(status.batch_auto_launch_enabled),
+            }),
+        });
+        const report = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(report.detail || 'Не удалось создать кампании повторного обзвона в Tomoru');
+        }
+        return report;
+    }
+
+    function downloadRetryDryRun(importId) {
+        const link = document.createElement('a');
+        link.href = `/api/call-results/retry-queue/tomoru-dry-run.zip?import_id=${importId}`;
+        link.download = `tomoru_retry_dry_run_${importId}.zip`;
+        link.click();
+    }
+
+    function retryDeliverySummary(result, phoneCount) {
+        const report = result?.tomoru;
+        if (!report) {
+            return `Скачан ZIP для ручного повторного обзвона: ${phoneCount} телефонов.`;
+        }
+        const created = Number(report.created_batches || 0);
+        const launched = Number(report.launched_batches || 0);
+        if (launched > 0) {
+            return `В Tomoru создано и запущено кампаний: ${launched}. Телефонов: ${phoneCount}.`;
+        }
+        return `В Tomoru создано кампаний: ${created}. Автозапуск отключён — проверьте кампании перед запуском.`;
+    }
+
+    async function prepareRetryExport(importId, autoRows, options = {}) {
         const rowIds = autoRows.map((row) => row.id);
         const response = await fetch(`/api/call-results/imports/${importId}/retry-queue/materialize`, {
             method: 'POST',
@@ -978,10 +1030,16 @@
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data.detail || 'Не удалось подготовить очередь повторных звонков');
-        const link = document.createElement('a');
-        link.href = `/api/call-results/retry-queue/tomoru-dry-run.zip?import_id=${importId}`;
-        link.download = `tomoru_retry_dry_run_${importId}.zip`;
-        link.click();
+
+        if (options.sendToTomoru) {
+            const report = await dispatchRetryQueueToTomoru(importId, data.entry_ids || []);
+            if (report) {
+                resetQueueCacheState();
+                return { ...data, tomoru: report };
+            }
+        }
+
+        downloadRetryDryRun(importId);
         resetQueueCacheState();
         return data;
     }
@@ -1045,6 +1103,7 @@
         const sendRowIds = collectBitrixSendRowIds();
         const autoRows = getFilteredRows('auto_call');
         const autoPhones = collectFilteredPhones(autoRows);
+        let retryResult = null;
 
         if (sendRowIds.length === 0 && autoPhones.length === 0) {
             showAlert(alertEl, 'Нечего отправлять или выгружать.', 'warning');
@@ -1056,8 +1115,8 @@
         if (sendRowIds.length === 0) {
             if (autoPhones.length > 0) {
                 try {
-                    await prepareRetryExport(importId, autoRows);
-                    showAlert(alertEl, `Скачан список автобзвона: ${autoPhones.length} телефонов.`, 'success');
+                    retryResult = await prepareRetryExport(importId, autoRows, { sendToTomoru: true });
+                    showAlert(alertEl, retryDeliverySummary(retryResult, autoPhones.length), 'success');
                 } catch (e) {
                     showAlert(alertEl, e.message, 'danger');
                 }
@@ -1081,7 +1140,7 @@
                     progressEl.innerHTML = '<div class="alert alert-warning small mb-0">Отправка в Bitrix24 пропущена: выполнение отключено (CALL_RESULTS_BITRIX_EXECUTION_ENABLED=false).</div>';
                 }
                 if (autoPhones.length > 0) {
-                    await prepareRetryExport(importId, autoRows);
+                    retryResult = await prepareRetryExport(importId, autoRows, { sendToTomoru: true });
                 }
                 unlockBulkSendModal();
                 updateSendAndExportButton();
@@ -1111,14 +1170,17 @@
             updateModal({ items: [], execute_status: 'executing' });
 
             if (autoPhones.length > 0) {
-                await prepareRetryExport(importId, autoRows);
+                retryResult = await prepareRetryExport(importId, autoRows, { sendToTomoru: true });
             }
 
             const pollResult = await pollFilterSendStatus(importId, sendRowIds, { onUpdate: updateModal });
             if (pollResult.data) updateModal(pollResult.data);
 
+            const retryMessage = autoPhones.length > 0
+                ? `; ${retryDeliverySummary(retryResult, autoPhones.length)}`
+                : '';
             const pageMsg = pollResult.ok
-                ? `Отправка в Bitrix24 завершена${autoPhones.length > 0 ? `, скачан список автобзвона: ${autoPhones.length} телефонов` : ''}`
+                ? `Отправка в Bitrix24 завершена${retryMessage}`
                 : (pollResult.message || 'Отправка завершена с ошибками');
             showAlert(alertEl, pageMsg, pollResult.ok ? 'success' : (pollResult.data ? 'warning' : 'danger'));
 

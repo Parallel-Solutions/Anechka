@@ -222,3 +222,24 @@ def test_batch_dispatch_endpoint_defaults_to_dry_run(client, db_session, monkeyp
     assert data["mode"] == "dry_run"
     assert data["external_calls"] is False
     assert data["prepared_contacts"] == 1
+
+
+def test_batch_dispatch_endpoint_empty_ids_dispatches_nothing(client, db_session, monkeypatch):
+    from app.routers import tomoru_integration
+
+    settings = _settings()
+    monkeypatch.setattr(tomoru_integration, "get_app_settings", lambda db: settings)
+    entry = _entry(entry_id=51)
+    entry.portal_id = resolve_portal_id(settings)
+    db_session.add(entry)
+    db_session.commit()
+
+    response = client.post(
+        "/api/call-results/retry-queue/tomoru-batches/dispatch",
+        json={"entry_ids": []},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["prepared_contacts"] == 0
+    assert data["prepared_batches"] == 0
