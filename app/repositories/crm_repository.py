@@ -29,7 +29,6 @@ from app.services.intelligent_export.contact_phone_heuristic import TOMORU_REGIO
 from app.services.intelligent_export.kp_legacy_stages import KP_CATEGORY_ID, legacy_kp_stage_ids
 from app.services.tomoru_districts import (
     TOMORU_DISTRICT_FIELDS,
-    district_names_from_payload,
     normalize_district_name,
 )
 from app.utils.datetime_utils import parse_bitrix_datetime
@@ -788,10 +787,26 @@ class CrmRepository:
             is_deleted=False,
             db=self.db,
         )
-        payload_query = q.with_only_columns(CrmEntity.raw_payload).order_by(None)
+        field_code = TOMORU_DISTRICT_FIELDS[0]
+        payload_keys = tuple(
+            dict.fromkeys((field_code, field_code.lower(), camel_key(field_code)))
+        )
+        payload_value = func.coalesce(
+            *[
+                cast(CrmEntity.raw_payload[key].as_string(), String)
+                for key in payload_keys
+            ]
+        )
+        district_query = (
+            q.with_only_columns(payload_value)
+            .where(payload_value.is_not(None), func.trim(payload_value) != "")
+            .distinct()
+            .order_by(None)
+        )
         names_by_key: dict[str, str] = {}
-        for raw_payload in self.db.scalars(payload_query).yield_per(500):
-            for name in district_names_from_payload(raw_payload):
+        for raw_name in self.db.scalars(district_query):
+            name = normalize_district_name(raw_name)
+            if name:
                 names_by_key.setdefault(name.casefold(), name)
         return sorted(names_by_key.values(), key=str.casefold)[: max(1, limit)]
 

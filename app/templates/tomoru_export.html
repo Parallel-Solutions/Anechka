@@ -488,7 +488,14 @@
     function onFilterChange(overrides) {
         if (applyingFromUrl) return;
         clearContactOverrides();
-        navigateFilters(readFiltersFromForm(overrides));
+        const state = sanitizeFilterState(readFiltersFromForm(overrides));
+        dealsState.offset = state.offset;
+        const query = buildUrlFromFilters(state);
+        const newUrl = window.location.pathname + query;
+        if (window.location.pathname + window.location.search !== newUrl) {
+            history.pushState(null, '', newUrl);
+        }
+        maybeLoadDealsPreview();
     }
     function setMessage(text, isError){
         message.textContent = text || '';
