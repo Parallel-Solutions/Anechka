@@ -7,13 +7,10 @@ from typing import Any
 from app.services.export_plan.payload_keys import payload_lookup
 
 
-# Bitrix contains historical duplicates of the same user field. Deals created in
-# different funnels/periods can have the value in any of these fields.
+# Verified Bitrix field «Место проведения работ». Other similarly named legacy
+# fields contain unrelated values, including whole numbered settlement lists.
 TOMORU_DISTRICT_FIELDS = (
     'UF_CRM_5ECE25C46C803',
-    'UF_CRM_5ED11CA3518DE',
-    'UF_CRM_UFCRM5ED11CA3518DE',
-    'UF_CRM_UFCRM5ECE25C46C803',
 )
 
 
@@ -25,7 +22,7 @@ def normalize_district_name(value: Any) -> str:
 
 
 def district_names_from_payload(raw_payload: dict[str, Any] | None) -> list[str]:
-    '''Read all populated historical district fields from a deal payload.'''
+    '''Read the verified district field from a deal payload.'''
     raw = raw_payload or {}
     names: list[str] = []
     seen: set[str] = set()

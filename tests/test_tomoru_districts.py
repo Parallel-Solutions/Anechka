@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pytest
-
 from app.config import get_settings
 from app.models import CrmEntity, ENTITY_DEAL
 from app.repositories.crm_repository import CrmRepository
@@ -41,8 +39,9 @@ def _deal(
     db.flush()
 
 
-@pytest.mark.parametrize('district_field', TOMORU_DISTRICT_FIELDS)
-def test_repository_filters_every_historical_district_field(db_session, district_field):
+def test_repository_filters_verified_district_field(db_session):
+    assert TOMORU_DISTRICT_FIELDS == ('UF_CRM_5ECE25C46C803',)
+    district_field = TOMORU_DISTRICT_FIELDS[0]
     _deal(
         db_session,
         100,
@@ -76,20 +75,20 @@ def test_district_options_are_limited_by_region_and_category(client, db_session)
         db_session,
         201,
         district='  Алейский   муниципальный район ',
-        district_field=TOMORU_DISTRICT_FIELDS[1],
+        district_field=TOMORU_DISTRICT_FIELDS[0],
     )
     _deal(
         db_session,
         202,
         district='Район другого региона',
-        district_field=TOMORU_DISTRICT_FIELDS[2],
+        district_field=TOMORU_DISTRICT_FIELDS[0],
         region_id=1200,
     )
     _deal(
         db_session,
         203,
         district='Район другой воронки',
-        district_field=TOMORU_DISTRICT_FIELDS[3],
+        district_field=TOMORU_DISTRICT_FIELDS[0],
         category_id=99,
     )
 

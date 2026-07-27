@@ -244,7 +244,7 @@ def test_tomoru_db_export_filters_by_district(db_session, tmp_path):
         db_session,
         3201,
         district="Мамонтовский муниципальный район",
-        district_field="UF_CRM_UFCRM5ED11CA3518DE",
+        district_field="UF_CRM_5ECE25C46C803",
     )
     _deal_entity(db_session, 3202, district="Другой муниципальный район")
     _contact(db_session, 721, post="директор", full_name="Мамонтов Мамонтов")
