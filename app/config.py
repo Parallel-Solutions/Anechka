@@ -6,12 +6,15 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+VSELLM_BASE_URL = "https://api.vsellm.ru/v1"
 load_dotenv(BASE_DIR / ".env")
 
 SETTING_KEYS = (
@@ -239,25 +242,36 @@ def get_planner_model(settings: Settings) -> str:
     return settings.ie_planner_model or settings.openai_model
 
 
+def normalize_llm_base_url(base_url: str) -> str:
+    """Return a canonical OpenAI-compatible API base URL."""
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized.lower() == "https://api.vsellm.ru":
+        return VSELLM_BASE_URL
+    return normalized
+
+
 def get_llm_provider_label(settings: Settings) -> str:
-    base_url = (settings.openai_base_url or "").lower().rstrip("/")
-    if not base_url or "api.openai.com" in base_url:
+    base_url = normalize_llm_base_url(settings.openai_base_url)
+    hostname = (urlparse(base_url).hostname or "").lower()
+    if not base_url or hostname == "api.openai.com":
         return "openai"
+    if hostname == "api.vsellm.ru":
+        return "vsellm"
     return "custom"
 
 
 def _normalize_llm_settings(merged: dict[str, Any]) -> None:
-    base_url = str(merged.get("openai_base_url") or "")
-    if "vsellm" in base_url.lower():
-        merged["openai_base_url"] = "https://api.openai.com/v1"
+    base_url = normalize_llm_base_url(str(merged.get("openai_base_url") or ""))
+    merged["openai_base_url"] = base_url
+    hostname = (urlparse(base_url).hostname or "").lower()
 
-    model = str(merged.get("openai_model") or "")
-    if model.startswith("openai/"):
-        merged["openai_model"] = model.removeprefix("openai/")
-
-    metadata_model = str(merged.get("openai_bitrix_metadata_model") or "")
-    if metadata_model.startswith("openai/"):
-        merged["openai_bitrix_metadata_model"] = metadata_model.removeprefix("openai/")
+    # Direct OpenAI expects model IDs such as gpt-4o. OpenAI-compatible
+    # gateways such as VseLLM use namespaced IDs, so preserve their prefixes.
+    if not base_url or hostname == "api.openai.com":
+        for key in ("openai_model", "openai_bitrix_metadata_model"):
+            model = str(merged.get(key) or "").strip()
+            if model.startswith("openai/"):
+                merged[key] = model.removeprefix("openai/")
 
 
 def get_export_dir(settings: Settings | None = None) -> Path:

@@ -40,21 +40,48 @@ def test_make_openai_client_omits_base_url_when_empty():
 
 def test_get_llm_provider_label():
     openai_url = Settings.model_construct(openai_base_url="https://api.openai.com/v1")
+    vsellm = Settings.model_construct(openai_base_url="https://api.vsellm.ru/v1")
     custom = Settings.model_construct(openai_base_url="https://example.com/v1")
     direct = Settings.model_construct(openai_base_url="")
     assert get_llm_provider_label(openai_url) == "openai"
+    assert get_llm_provider_label(vsellm) == "vsellm"
     assert get_llm_provider_label(custom) == "custom"
     assert get_llm_provider_label(direct) == "openai"
 
 
-def test_merge_db_settings_normalizes_legacy_vsellm():
+def test_merge_db_settings_preserves_vsellm_url_and_model_namespaces():
     settings = merge_db_settings(
         {
-            "openai_base_url": "https://api.vsellm.ru/v1",
+            "openai_base_url": "https://api.vsellm.ru",
             "openai_model": "openai/gpt-4o",
             "openai_bitrix_metadata_model": "openai/gpt-4o-mini",
         }
     )
-    assert settings.openai_base_url == "https://api.openai.com/v1"
+    assert settings.openai_base_url == "https://api.vsellm.ru/v1"
+    assert settings.openai_model == "openai/gpt-4o"
+    assert settings.openai_bitrix_metadata_model == "openai/gpt-4o-mini"
+
+
+def test_merge_db_settings_strips_gateway_namespace_for_direct_openai():
+    settings = merge_db_settings(
+        {
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "openai/gpt-4o",
+            "openai_bitrix_metadata_model": "openai/gpt-4o-mini",
+        }
+    )
     assert settings.openai_model == "gpt-4o"
     assert settings.openai_bitrix_metadata_model == "gpt-4o-mini"
+
+
+def test_make_openai_client_normalizes_vsellm_base_url():
+    settings = Settings.model_construct(
+        openai_api_key="sk-vsellm-test",
+        openai_base_url="https://api.vsellm.ru/",
+    )
+    with patch("app.services.llm_client.OpenAI") as openai_cls:
+        make_openai_client(settings)
+    openai_cls.assert_called_once_with(
+        api_key="sk-vsellm-test",
+        base_url="https://api.vsellm.ru/v1",
+    )

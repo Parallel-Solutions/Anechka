@@ -73,3 +73,27 @@ def test_save_settings_keeps_webhook_when_field_empty(client, db_session):
     settings = get_app_settings(db_session)
     assert settings.bitrix_webhook_url == initial_url
     assert settings.connect_timeout == 15.0
+
+def test_save_vsellm_settings_preserves_namespaced_model(client, db_session):
+    response = client.post(
+        "/settings",
+        data={
+            "openai_api_key": "sk-vsellm-test",
+            "openai_base_url": "https://api.vsellm.ru",
+            "openai_model": "openai/gpt-5",
+            "connect_timeout": 10.0,
+            "read_timeout": 60.0,
+            "max_retries": 5,
+            "retry_base_delay": 1.0,
+            "max_export_size": 5000,
+            "export_dir": "./exports",
+            "log_level": "INFO",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    settings = get_app_settings(db_session)
+    assert settings.openai_base_url == "https://api.vsellm.ru/v1"
+    assert settings.openai_model == "openai/gpt-5"
+    assert settings.openai_api_key == "sk-vsellm-test"

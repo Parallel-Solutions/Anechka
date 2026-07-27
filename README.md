@@ -128,7 +128,19 @@ OPENAI_MODEL=gpt-4o
 OPENAI_BITRIX_METADATA_MODEL=
 ```
 
-Ключ LLM (`OPENAI_API_KEY`) можно получить на [platform.openai.com/api-keys](https://platform.openai.com/api-keys).
+Ключ LLM (`OPENAI_API_KEY`) можно получить у OpenAI или VseLLM. Оба провайдера
+подключаются через OpenAI-совместимый API.
+
+Для VseLLM:
+
+```env
+OPENAI_API_KEY=ваш-ключ-vsellm
+OPENAI_BASE_URL=https://api.vsellm.ru/v1
+OPENAI_MODEL=openai/gpt-5
+```
+
+Эти значения также можно задать на странице **Настройки**. Для VseLLM необходимо
+сохранять полный ID модели с префиксом провайдера, например `openai/gpt-5`.
 
 Полный список переменных: [.env.example](.env.example) и [BITRIX_IMPORT.md](BITRIX_IMPORT.md).
 

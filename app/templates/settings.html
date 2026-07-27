@@ -32,14 +32,15 @@
                 {% endif %}
             </div>
             <div class="mb-3">
-                <label class="form-label">API-ключ OpenAI</label>
+                <label class="form-label">API-ключ LLM (OpenAI / VseLLM)</label>
                 <input type="password" class="form-control" name="openai_api_key"
                        placeholder="{{ openai_key_masked or 'sk-...' }}"
                        autocomplete="off">
                 <div class="form-text">
                     Оставьте пустым, чтобы не менять текущий ключ.
-                    Ключ можно получить в
-                    <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">platform.openai.com/api-keys</a>.
+                    Ключ можно получить у выбранного провайдера:
+                    <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">OpenAI</a>
+                    или <a href="https://vsellm.ru/" target="_blank" rel="noopener">VseLLM</a>.
                 </div>
                 {% if openai_key_masked %}
                 <div class="form-text fw-semibold">Текущий: {{ openai_key_masked }}</div>
@@ -50,13 +51,17 @@
                 <input type="text" class="form-control" name="openai_base_url"
                        value="{{ settings.openai_base_url }}" placeholder="https://api.openai.com/v1">
                 <div class="form-text">
-                    OpenAI API: <code>https://api.openai.com/v1</code>.
+                    OpenAI: <code>https://api.openai.com/v1</code>.
+                    VseLLM: <code>https://api.vsellm.ru/v1</code>.
                 </div>
             </div>
             <div class="mb-3">
                 <label class="form-label">Модель LLM</label>
                 <input type="text" class="form-control" name="openai_model"
                        value="{{ settings.openai_model }}" placeholder="gpt-4o">
+                <div class="form-text">
+                    Для VseLLM укажите полный ID модели, например <code>openai/gpt-5</code>.
+                </div>
             </div>
             <div class="row g-3">
                 <div class="col-md-4">
